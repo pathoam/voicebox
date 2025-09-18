@@ -14,10 +14,20 @@ A cross-platform voice-to-text transcription application that allows users to qu
 
 ### Quick Install (Recommended)
 
-**Download single executable:**
-1. Go to [Releases](releases) and download for your platform
-2. Extract and run the installer script  
-3. Launch VoiceBox - no Python required!
+**Option 1: Download Pre-built Package** (When available)
+1. Go to [Releases](../../releases) page
+2. Download the package for your platform:
+   - `-portable` = No installation, run from anywhere
+   - `-installer` = Install to system with menu integration
+3. Extract and run - no Python required!
+
+**Option 2: Build from Source** (Current method)
+```bash
+# Requires Python 3.8+ and uv
+git clone <repository-url>
+cd voicebox
+make release  # Creates all packages in dist/
+```
 
 ### Development Installation
 
@@ -47,7 +57,7 @@ make run
 1. **From executable:** Just run `voicebox` (after installation)
 2. **From source:** `make run` or `uv run python src/main.py`
 
-2. Press the hotkey (default: `Ctrl+Shift+V`) to start recording
+2. Press the hotkey (default: `Ctrl+Space`) to start recording
 3. Speak into your microphone
 4. Press the hotkey again to stop recording and transcribe
 5. The transcribed text will be automatically inserted at your cursor
@@ -64,7 +74,7 @@ Configuration is stored in a JSON file in your system's config directory:
 ```json
 {
   "transcription_mode": "local",
-  "hotkey": "ctrl+shift+v",
+  "hotkey": "ctrl+space",
   "api_key": "",
   "local_model_size": "base"
 }
@@ -83,10 +93,10 @@ Configuration is stored in a JSON file in your system's config directory:
 #### Hotkey Options
 
 Common hotkey combinations:
-- `ctrl+shift+v` (default)
+- `ctrl+space` (default)
+- `ctrl+shift+v`
 - `ctrl+alt+v`
-- `alt+space`
-- `f12`
+- `button9` (mouse side button)
 
 ### Setting up API Mode
 

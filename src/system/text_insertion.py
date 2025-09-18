@@ -60,10 +60,12 @@ class TextInserter:
             # Small delay to ensure clipboard is set
             time.sleep(0.1)
             
-            # Paste using Ctrl+V
+            # Paste using Ctrl+Shift+V (works in terminals and most apps)
             self.keyboard.press(Key.ctrl)
+            self.keyboard.press(Key.shift)
             self.keyboard.press('v')
             self.keyboard.release('v')
+            self.keyboard.release(Key.shift)
             self.keyboard.release(Key.ctrl)
             
             # Small delay before restoring clipboard

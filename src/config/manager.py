@@ -9,7 +9,7 @@ class ConfigManager:
     
     DEFAULT_CONFIG = {
         "transcription_mode": "local",  # "local" or "api"  
-        "hotkey": "f12",  # Much less likely to conflict than ctrl+shift+v
+        "hotkey": "ctrl+space",  # Clean combination that avoids terminal escape sequences
         "api_key": "",
         "local_model_size": "base",
         "audio_sample_rate": 16000,
@@ -88,7 +88,7 @@ class ConfigManager:
         
     def get_hotkey(self) -> str:
         """Get configured hotkey combination."""
-        return self.config.get("hotkey", "f12")
+        return self.config.get("hotkey", "ctrl+space")
         
     def get_api_key(self) -> Optional[str]:
         """Get OpenAI API key."""
