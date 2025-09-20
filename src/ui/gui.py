@@ -124,6 +124,33 @@ class SettingsWindow(QMainWindow):
         self.model_combo.addItems(["tiny", "base", "small", "medium", "large-v2", "large-v3"])
         transcription_layout.addRow("Local Model:", self.model_combo)
         
+        self.language_combo = QComboBox()
+        languages = [
+            ("auto", "Auto-detect"),
+            ("en", "English"),
+            ("es", "Spanish"),
+            ("fr", "French"),
+            ("de", "German"),
+            ("it", "Italian"),
+            ("pt", "Portuguese"),
+            ("ru", "Russian"),
+            ("ja", "Japanese"),
+            ("ko", "Korean"),
+            ("zh", "Chinese"),
+            ("ar", "Arabic"),
+            ("hi", "Hindi"),
+            ("tr", "Turkish"),
+            ("nl", "Dutch"),
+            ("sv", "Swedish"),
+            ("da", "Danish"),
+            ("no", "Norwegian"),
+            ("fi", "Finnish"),
+            ("pl", "Polish")
+        ]
+        for code, name in languages:
+            self.language_combo.addItem(name, code)
+        transcription_layout.addRow("Language:", self.language_combo)
+        
         layout.addWidget(transcription_group)
         
         # Hotkey settings
@@ -217,6 +244,14 @@ class SettingsWindow(QMainWindow):
         self.mode_combo.setCurrentText(self.config_manager.get_transcription_mode())
         self.api_key_edit.setText(self.config_manager.get_api_key() or "")
         self.model_combo.setCurrentText(self.config_manager.get_local_model_size())
+        
+        # Set language combo
+        current_language = self.config_manager.get_transcription_language()
+        for i in range(self.language_combo.count()):
+            if self.language_combo.itemData(i) == current_language:
+                self.language_combo.setCurrentIndex(i)
+                break
+                
         self.hotkey_edit.setText(self.config_manager.get_hotkey())
         self.insertion_combo.setCurrentText(self.config_manager.get_text_insertion_method())
         self.sample_rate_spin.setValue(self.config_manager.get_audio_sample_rate())
@@ -230,6 +265,7 @@ class SettingsWindow(QMainWindow):
         self.config_manager.set_setting("transcription_mode", self.mode_combo.currentText())
         self.config_manager.set_setting("api_key", self.api_key_edit.text())
         self.config_manager.set_setting("local_model_size", self.model_combo.currentText())
+        self.config_manager.set_setting("transcription_language", self.language_combo.currentData())
         self.config_manager.set_setting("hotkey", self.hotkey_edit.text())
         self.config_manager.set_setting("text_insertion_method", self.insertion_combo.currentText())
         self.config_manager.set_setting("audio_sample_rate", self.sample_rate_spin.value())

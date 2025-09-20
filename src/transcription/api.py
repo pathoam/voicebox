@@ -7,14 +7,16 @@ from .base import TranscriptionService, TranscriptionError
 class APIWhisperService(TranscriptionService):
     """OpenAI Whisper API transcription service."""
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, language: str = "auto"):
         """
         Initialize API Whisper service.
         
         Args:
             api_key: OpenAI API key. If None, will try to get from environment variable.
+            language: Language for transcription ("auto" for auto-detection or ISO 639-1 codes)
         """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.language = None if language == "auto" else language
         self.client: Optional[OpenAI] = None
         
         if self.api_key:
@@ -43,11 +45,18 @@ class APIWhisperService(TranscriptionService):
             print(f"Transcribing with OpenAI API: {audio_file_path}")
             
             with open(audio_file_path, "rb") as audio_file:
-                transcript = self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="text"
-                )
+                # Prepare API parameters
+                api_params = {
+                    "model": "whisper-1",
+                    "file": audio_file,
+                    "response_format": "text"
+                }
+                
+                # Add language if specified
+                if self.language:
+                    api_params["language"] = self.language
+                
+                transcript = self.client.audio.transcriptions.create(**api_params)
                 
             transcribed_text = transcript.strip() if isinstance(transcript, str) else ""
             

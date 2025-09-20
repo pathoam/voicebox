@@ -113,13 +113,15 @@ class VoiceBoxApp:
         
         if mode == "local":
             model_size = self.config_manager.get_local_model_size()
-            self.transcription_service = LocalWhisperService(model_size=model_size)
+            language = self.config_manager.get_transcription_language()
+            self.transcription_service = LocalWhisperService(model_size=model_size, language=language)
             
         elif mode == "api":
             api_key = self.config_manager.get_api_key()
             if not api_key:
                 raise RuntimeError("API mode selected but no API key configured")
-            self.transcription_service = APIWhisperService(api_key=api_key)
+            language = self.config_manager.get_transcription_language()
+            self.transcription_service = APIWhisperService(api_key=api_key, language=language)
             
         else:
             raise RuntimeError(f"Unknown transcription mode: {mode}")
@@ -411,6 +413,41 @@ class VoiceBoxApp:
                 print(f"✅ Hotkey updated to: {new_hotkey}")
             except Exception as e:
                 print(f"❌ Failed to update hotkey: {e}")
+        
+        # Check if transcription settings changed (requires reinitialization)
+        current_mode = self.config_manager.get_transcription_mode()
+        current_model = self.config_manager.get_local_model_size()
+        current_language = self.config_manager.get_transcription_language()
+        current_api_key = self.config_manager.get_api_key()
+        
+        # Check if we need to reinitialize transcription service
+        needs_transcription_reload = False
+        if hasattr(self.transcription_service, 'model_size'):
+            # Local service
+            if (current_model != getattr(self.transcription_service, 'model_size', None) or
+                current_language != getattr(self.transcription_service, 'language', 'auto')):
+                needs_transcription_reload = True
+        elif hasattr(self.transcription_service, 'api_key'):
+            # API service  
+            if (current_api_key != getattr(self.transcription_service, 'api_key', None) or
+                current_language != getattr(self.transcription_service, 'language', 'auto')):
+                needs_transcription_reload = True
+        
+        if needs_transcription_reload:
+            try:
+                print("🔄 Reinitializing transcription service...")
+                self._initialize_transcription()
+                print("✅ Transcription service updated!")
+            except Exception as e:
+                print(f"❌ Failed to update transcription service: {e}")
+        
+        # Audio settings require restart notice (can't change during recording)
+        current_sample_rate = self.config_manager.get_audio_sample_rate()
+        current_channels = self.config_manager.get_audio_channels()
+        if (self.audio_recorder and 
+            (current_sample_rate != getattr(self.audio_recorder, 'sample_rate', 16000) or
+             current_channels != getattr(self.audio_recorder, 'channels', 1))):
+            print("⚠️  Audio settings changed - restart VoiceBox for changes to take effect")
                 
         print("🔄 Configuration reloaded!")
     

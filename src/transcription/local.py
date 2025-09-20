@@ -9,19 +9,21 @@ class LocalWhisperService(TranscriptionService):
     
     AVAILABLE_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
     
-    def __init__(self, model_size: str = "base", device: str = "cpu"):
+    def __init__(self, model_size: str = "base", device: str = "cpu", language: str = "auto"):
         """
         Initialize local Whisper service.
         
         Args:
             model_size: Size of the Whisper model to use
             device: Device to run inference on ("cpu", "cuda", "auto")
+            language: Language for transcription ("auto" for auto-detection or ISO 639-1 codes)
         """
         if model_size not in self.AVAILABLE_MODELS:
             raise ValueError(f"Model size must be one of: {self.AVAILABLE_MODELS}")
             
         self.model_size = model_size
         self.device = device
+        self.language = None if language == "auto" else language
         self.model: Optional[WhisperModel] = None
         self._model_loaded = False
         
@@ -63,7 +65,7 @@ class LocalWhisperService(TranscriptionService):
             segments, info = self.model.transcribe(
                 audio_file_path,
                 beam_size=5,
-                language=None,  # Auto-detect language
+                language=self.language,  # Use configured language or auto-detect
                 vad_filter=True,  # Voice activity detection
                 vad_parameters=dict(min_silence_duration_ms=500)
             )

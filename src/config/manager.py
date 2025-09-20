@@ -12,6 +12,7 @@ class ConfigManager:
         "hotkey": "ctrl+space",  # Clean combination that avoids terminal escape sequences
         "api_key": "",
         "local_model_size": "base",
+        "transcription_language": "auto",  # Language for Whisper transcription
         "audio_sample_rate": 16000,
         "audio_channels": 1,
         "text_insertion_method": "auto",  # "auto", "clipboard", "typing"
@@ -98,6 +99,10 @@ class ConfigManager:
     def get_local_model_size(self) -> str:
         """Get local Whisper model size."""
         return self.config.get("local_model_size", "base")
+        
+    def get_transcription_language(self) -> str:
+        """Get transcription language setting."""
+        return self.config.get("transcription_language", "auto")
         
     def get_audio_sample_rate(self) -> int:
         """Get audio sample rate."""
