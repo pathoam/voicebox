@@ -14,6 +14,7 @@ from transcription.base import TranscriptionService, TranscriptionError
 from system.hotkeys import HotkeyManager
 from system.text_insertion import TextInserter
 from config.manager import ConfigManager
+from text.substitutions import SubstitutionManager
 
 
 class AppState(Enum):
@@ -37,6 +38,7 @@ class VoiceBoxApp:
         self.transcription_service: Optional[TranscriptionService] = None
         self.hotkey_manager: Optional[HotkeyManager] = None
         self.text_inserter: Optional[TextInserter] = None
+        self.substitution_manager: Optional[SubstitutionManager] = None
         
         # Runtime state
         self.current_audio_file: Optional[str] = None
@@ -58,6 +60,7 @@ class VoiceBoxApp:
             self._initialize_audio()
             self._initialize_transcription()
             self._initialize_text_inserter()
+            self._initialize_substitutions()
             self._initialize_hotkeys()
             
             # Start listening for hotkeys
@@ -128,6 +131,11 @@ class VoiceBoxApp:
         """Initialize text insertion component."""
         self.text_inserter = TextInserter()
         
+    def _initialize_substitutions(self) -> None:
+        """Initialize text substitution manager."""
+        config_dir = self.config_manager.config_dir
+        self.substitution_manager = SubstitutionManager(config_dir)
+        
     def _initialize_hotkeys(self) -> None:
         """Initialize hotkey management."""
         hotkey = self.config_manager.get_hotkey()
@@ -195,8 +203,20 @@ class VoiceBoxApp:
                 print(" (no speech detected)")
                 self.state = AppState.IDLE
                 return
+            
+            # Apply text substitutions
+            if self.substitution_manager:
+                original_text = transcribed_text
+                transcribed_text = self.substitution_manager.apply_substitutions(transcribed_text)
                 
-            print(f" done!\n{transcribed_text}")
+                # Show what was changed if different
+                if original_text != transcribed_text:
+                    print(f" done!\nOriginal: {original_text}")
+                    print(f"Fixed:    {transcribed_text}")
+                else:
+                    print(f" done!\n{transcribed_text}")
+            else:
+                print(f" done!\n{transcribed_text}")
             
             # Notify GUI if callback is set
             if self.on_transcription_complete:
@@ -373,6 +393,27 @@ class VoiceBoxApp:
             print(f"❌ Failed to change hotkey: {e}")
             print("Make sure the hotkey format is valid (e.g., 'ctrl+shift+v')")
             
+    def reload_config(self) -> None:
+        """Reload configuration and update components."""
+        # Reload config manager
+        self.config_manager._load_config()
+        
+        # Reload substitutions
+        if self.substitution_manager:
+            self.substitution_manager.load_substitutions()
+            
+        # Reload hotkey if it changed
+        new_hotkey = self.config_manager.get_hotkey()
+        if self.hotkey_manager and self.hotkey_manager.get_current_hotkey() != new_hotkey:
+            try:
+                self.hotkey_manager.set_hotkey(new_hotkey)
+                self.hotkey_manager.start_listening()
+                print(f"✅ Hotkey updated to: {new_hotkey}")
+            except Exception as e:
+                print(f"❌ Failed to update hotkey: {e}")
+                
+        print("🔄 Configuration reloaded!")
+    
     def get_status(self) -> dict:
         """Get current application status."""
         return {

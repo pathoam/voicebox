@@ -6,7 +6,9 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox, QTextEdit,
-    QSystemTrayIcon, QMenu, QGroupBox, QFormLayout, QSpinBox
+    QSystemTrayIcon, QMenu, QGroupBox, QFormLayout, QSpinBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
+    QFileDialog, QTabWidget
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
 from PyQt6.QtGui import QIcon, QPixmap, QAction
@@ -63,20 +65,48 @@ class VoiceBoxWorker(QThread):
 class SettingsWindow(QMainWindow):
     """Settings configuration window."""
     
-    def __init__(self, config_manager: ConfigManager):
+    def __init__(self, config_manager: ConfigManager, voicebox_app=None):
         super().__init__()
         self.config_manager = config_manager
+        self.voicebox_app = voicebox_app  # Reference to running VoiceBox instance
         self.init_ui()
         self.load_settings()
         
     def init_ui(self):
         """Initialize the settings UI."""
         self.setWindowTitle("VoiceBox Settings")
-        self.setFixedSize(500, 400)
+        self.setFixedSize(700, 600)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
+        
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+        
+        # Create tabs
+        self.create_general_tab()
+        self.create_substitutions_tab()
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.save_button = QPushButton("Save")
+        self.save_button.clicked.connect(self.save_settings)
+        
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.close)
+        
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+        
+        layout.addLayout(button_layout)
+        
+    def create_general_tab(self):
+        """Create the general settings tab."""
+        general_tab = QWidget()
+        layout = QVBoxLayout(general_tab)
         
         # Transcription settings
         transcription_group = QGroupBox("Transcription")
@@ -131,19 +161,56 @@ class SettingsWindow(QMainWindow):
         
         layout.addWidget(audio_group)
         
-        # Buttons
-        button_layout = QHBoxLayout()
+        self.tab_widget.addTab(general_tab, "General")
         
-        self.save_button = QPushButton("Save")
-        self.save_button.clicked.connect(self.save_settings)
+    def create_substitutions_tab(self):
+        """Create the text substitutions tab."""
+        subs_tab = QWidget()
+        layout = QVBoxLayout(subs_tab)
         
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self.close)
+        # Header
+        header_label = QLabel("Text Substitutions")
+        header_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        layout.addWidget(header_label)
         
-        button_layout.addWidget(self.save_button)
-        button_layout.addWidget(self.cancel_button)
+        desc_label = QLabel("Define replacements for commonly misheard technical terms:")
+        layout.addWidget(desc_label)
         
-        layout.addLayout(button_layout)
+        # Table for substitutions
+        self.substitutions_table = QTableWidget()
+        self.substitutions_table.setColumnCount(2)
+        self.substitutions_table.setHorizontalHeaderLabels(["Misheard Text", "Correct Text"])
+        self.substitutions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.substitutions_table)
+        
+        # Buttons for managing substitutions
+        subs_button_layout = QHBoxLayout()
+        
+        self.add_sub_button = QPushButton("Add")
+        self.add_sub_button.clicked.connect(self.add_substitution)
+        
+        self.remove_sub_button = QPushButton("Remove Selected")
+        self.remove_sub_button.clicked.connect(self.remove_substitution)
+        
+        self.import_sub_button = QPushButton("Import...")
+        self.import_sub_button.clicked.connect(self.import_substitutions)
+        
+        self.export_sub_button = QPushButton("Export...")
+        self.export_sub_button.clicked.connect(self.export_substitutions)
+        
+        self.reset_sub_button = QPushButton("Reset to Defaults")
+        self.reset_sub_button.clicked.connect(self.reset_substitutions)
+        
+        subs_button_layout.addWidget(self.add_sub_button)
+        subs_button_layout.addWidget(self.remove_sub_button)
+        subs_button_layout.addStretch()
+        subs_button_layout.addWidget(self.import_sub_button)
+        subs_button_layout.addWidget(self.export_sub_button)
+        subs_button_layout.addWidget(self.reset_sub_button)
+        
+        layout.addLayout(subs_button_layout)
+        
+        self.tab_widget.addTab(subs_tab, "Substitutions")
         
     def load_settings(self):
         """Load current settings into the UI."""
@@ -155,6 +222,9 @@ class SettingsWindow(QMainWindow):
         self.sample_rate_spin.setValue(self.config_manager.get_audio_sample_rate())
         self.channels_spin.setValue(self.config_manager.get_audio_channels())
         
+        # Load substitutions
+        self.load_substitutions_table()
+        
     def save_settings(self):
         """Save settings and close window."""
         self.config_manager.set_setting("transcription_mode", self.mode_combo.currentText())
@@ -165,7 +235,111 @@ class SettingsWindow(QMainWindow):
         self.config_manager.set_setting("audio_sample_rate", self.sample_rate_spin.value())
         self.config_manager.set_setting("audio_channels", self.channels_spin.value())
         
+        # Save substitutions
+        self.save_substitutions()
+        
+        # Reload all settings in the running VoiceBox instance
+        if self.voicebox_app and hasattr(self.voicebox_app, 'reload_config'):
+            self.voicebox_app.reload_config()
+        
         self.close()
+        
+    def load_substitutions_table(self):
+        """Load substitutions into the table."""
+        # Import substitution manager to access current substitutions
+        from text.substitutions import SubstitutionManager
+        
+        config_dir = self.config_manager.config_dir
+        sub_manager = SubstitutionManager(config_dir)
+        substitutions = sub_manager.get_all_substitutions()
+        
+        # Set table size
+        self.substitutions_table.setRowCount(len(substitutions))
+        
+        # Populate table
+        for row, (pattern, replacement) in enumerate(substitutions.items()):
+            self.substitutions_table.setItem(row, 0, QTableWidgetItem(pattern))
+            self.substitutions_table.setItem(row, 1, QTableWidgetItem(replacement))
+            
+    def add_substitution(self):
+        """Add a new substitution row."""
+        row_count = self.substitutions_table.rowCount()
+        self.substitutions_table.insertRow(row_count)
+        self.substitutions_table.setItem(row_count, 0, QTableWidgetItem(""))
+        self.substitutions_table.setItem(row_count, 1, QTableWidgetItem(""))
+        
+    def remove_substitution(self):
+        """Remove selected substitution."""
+        current_row = self.substitutions_table.currentRow()
+        if current_row >= 0:
+            self.substitutions_table.removeRow(current_row)
+            
+    def import_substitutions(self):
+        """Import substitutions from file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import Substitutions", "", "JSON Files (*.json)"
+        )
+        if file_path:
+            from text.substitutions import SubstitutionManager
+            config_dir = self.config_manager.config_dir
+            sub_manager = SubstitutionManager(config_dir)
+            
+            if sub_manager.import_substitutions(file_path):
+                self.load_substitutions_table()
+                QMessageBox.information(self, "Success", "Substitutions imported successfully!")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to import substitutions.")
+                
+    def export_substitutions(self):
+        """Export substitutions to file."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Substitutions", "substitutions.json", "JSON Files (*.json)"
+        )
+        if file_path:
+            from text.substitutions import SubstitutionManager
+            config_dir = self.config_manager.config_dir
+            sub_manager = SubstitutionManager(config_dir)
+            
+            if sub_manager.export_substitutions(file_path):
+                QMessageBox.information(self, "Success", "Substitutions exported successfully!")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to export substitutions.")
+                
+    def reset_substitutions(self):
+        """Reset substitutions to defaults."""
+        reply = QMessageBox.question(
+            self, "Reset Substitutions",
+            "Are you sure you want to reset all substitutions to defaults? This will remove all custom substitutions.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            from text.substitutions import SubstitutionManager
+            config_dir = self.config_manager.config_dir
+            sub_manager = SubstitutionManager(config_dir)
+            sub_manager.reset_to_defaults()
+            self.load_substitutions_table()
+            
+    def save_substitutions(self):
+        """Save substitutions from table."""
+        from text.substitutions import SubstitutionManager
+        config_dir = self.config_manager.config_dir
+        sub_manager = SubstitutionManager(config_dir)
+        
+        # Clear current substitutions (keep only defaults)
+        sub_manager.reset_to_defaults()
+        
+        # Add substitutions from table
+        for row in range(self.substitutions_table.rowCount()):
+            pattern_item = self.substitutions_table.item(row, 0)
+            replacement_item = self.substitutions_table.item(row, 1)
+            
+            if pattern_item and replacement_item:
+                pattern = pattern_item.text().strip()
+                replacement = replacement_item.text().strip()
+                
+                if pattern and replacement:
+                    sub_manager.add_substitution(pattern, replacement)
 
 
 class VoiceBoxGUI(QMainWindow):
@@ -307,7 +481,7 @@ class VoiceBoxGUI(QMainWindow):
     def show_settings(self):
         """Show settings window."""
         if self.settings_window is None:
-            self.settings_window = SettingsWindow(self.config_manager)
+            self.settings_window = SettingsWindow(self.config_manager, self.voicebox_app)
             
         self.settings_window.show()
         self.settings_window.raise_()
