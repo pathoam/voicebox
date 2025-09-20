@@ -43,6 +43,10 @@ class VoiceBoxApp:
         self._running = False
         self._state_lock = threading.Lock()
         
+        # Callbacks for GUI integration
+        self.on_transcription_complete = None
+        self.on_status_change = None
+        
     def start(self) -> bool:
         """Initialize and start the application."""
         try:
@@ -193,6 +197,10 @@ class VoiceBoxApp:
                 return
                 
             print(f" done!\n{transcribed_text}")
+            
+            # Notify GUI if callback is set
+            if self.on_transcription_complete:
+                self.on_transcription_complete(transcribed_text)
             
             # Insert text
             self.state = AppState.INSERTING
@@ -378,31 +386,39 @@ class VoiceBoxApp:
 
 def main():
     """Main entry point."""
-    print("VoiceBox - Voice-to-Text Transcription Tool")
-    print("-" * 40)
-    
-    app = VoiceBoxApp()
-    
     # Handle command line arguments
     if len(sys.argv) > 1:
-        if sys.argv[1] == "--test":
+        if sys.argv[1] == "--gui":
+            # Run GUI mode
+            from .ui.gui import run_gui
+            sys.exit(run_gui())
+        elif sys.argv[1] == "--test":
+            print("VoiceBox - Voice-to-Text Transcription Tool")
+            print("-" * 40)
             print("Running in test mode...")
+            app = VoiceBoxApp()
             if not app.start():
                 sys.exit(1)
             print("Test completed, exiting...")
             app.stop()
             return
         elif sys.argv[1] == "--config":
+            app = VoiceBoxApp()
             print(f"Configuration file: {app.config_manager.get_config_path()}")
             return
         elif sys.argv[1] == "--help":
-            print("Usage: python main.py [--test|--config|--help]")
+            print("Usage: python main.py [--gui|--test|--config|--help]")
+            print("  --gui    : Run with graphical interface")
             print("  --test   : Test initialization and exit")
             print("  --config : Show configuration file path")
             print("  --help   : Show this help")
             return
-            
-    # Run normally
+    
+    # Run CLI mode by default        
+    print("VoiceBox - Voice-to-Text Transcription Tool")
+    print("-" * 40)
+    
+    app = VoiceBoxApp()
     app.run_forever()
 
 

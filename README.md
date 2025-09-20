@@ -54,9 +54,15 @@ make run
 
 ### Usage
 
+**GUI Mode (Recommended):**
+1. **From executable:** `voicebox --gui` (after installation)
+2. **From source:** `uv run python gui.py`
+
+**CLI Mode:**
 1. **From executable:** Just run `voicebox` (after installation)
 2. **From source:** `make run` or `uv run python src/main.py`
 
+**Using VoiceBox:**
 2. Press the hotkey (default: `Ctrl+Space`) to start recording
 3. Speak into your microphone
 4. Press the hotkey again to stop recording and transcribe
@@ -113,6 +119,7 @@ Common hotkey combinations:
 
 ```bash
 python main.py --help     # Show help
+python main.py --gui      # Run with GUI (system tray)
 python main.py --test     # Test initialization
 python main.py --config   # Show config file path
 ```
