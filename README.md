@@ -4,29 +4,40 @@ A cross-platform voice-to-text transcription application that allows users to qu
 
 ## Features
 
+- **Modern GUI Interface**: Professional system tray application with settings management
 - **Global Hotkey Activation**: Press a configurable hotkey to start/stop recording
+- **Multi-Language Support**: 20+ languages with auto-detection or manual selection
+- **Intelligent Text Substitutions**: Automatic correction of technical terms (e.g., "superbase" → "Supabase")
 - **Dual Transcription Modes**: Local Whisper models or OpenAI Whisper API
-- **Automatic Text Insertion**: Transcribed text is automatically inserted at cursor
+- **Terminal-Compatible Text Insertion**: Smart Ctrl+Shift+V insertion that works in terminals
+- **Live Configuration Reload**: Settings changes take effect immediately without restart
+- **Transcription History**: Real-time log of recent transcriptions with timestamps
 - **Cross-platform**: Works on Windows, macOS, and Linux
-- **Simple Configuration**: JSON-based configuration with sensible defaults
+- **Simple Configuration**: GUI-based settings with JSON persistence
 
 ## Quick Start
 
 ### Quick Install (Recommended)
 
-**Option 1: Download Pre-built Package** (When available)
-1. Go to [Releases](../../releases) page
-2. Download the package for your platform:
-   - `-portable` = No installation, run from anywhere
-   - `-installer` = Install to system with menu integration
-3. Extract and run - no Python required!
-
-**Option 2: Build from Source** (Current method)
+**Option 1: Install from PyPI** (Not yet published - use Option 2 for now)
 ```bash
-# Requires Python 3.8+ and uv
+# Install with uv (recommended) - Coming soon!
+uv add voicebox
+
+# Or with pip - Coming soon!
+pip install voicebox
+
+# Run immediately
+voicebox --gui
+```
+
+**Option 2: Install from Source** (Current recommended method)
+```bash
+# Clone and install
 git clone <repository-url>
 cd voicebox
-make release  # Creates all packages in dist/
+uv sync
+uv run python gui.py
 ```
 
 ### Development Installation
@@ -82,7 +93,8 @@ Configuration is stored in a JSON file in your system's config directory:
   "transcription_mode": "local",
   "hotkey": "ctrl+space",
   "api_key": "",
-  "local_model_size": "base"
+  "local_model_size": "base",
+  "transcription_language": "auto"
 }
 ```
 
@@ -95,6 +107,16 @@ Configuration is stored in a JSON file in your system's config directory:
 - **api**: Uses OpenAI Whisper API
   - Requires internet connection and API key
   - Generally faster and more accurate
+
+#### Language Selection
+
+VoiceBox supports 20+ languages for improved accuracy:
+- **auto**: Auto-detect language (default)
+- **en**: English, **es**: Spanish, **fr**: French, **de**: German
+- **ja**: Japanese, **zh**: Chinese, **ru**: Russian, **ar**: Arabic
+- And many more available in the GUI settings
+
+Specifying the correct language significantly improves transcription accuracy for technical terms.
 
 #### Hotkey Options
 
@@ -114,6 +136,44 @@ Common hotkey combinations:
   "api_key": "your-api-key-here"
 }
 ```
+
+## Advanced Features
+
+### Text Substitutions
+
+VoiceBox includes intelligent text correction for commonly misheard technical terms:
+
+**Built-in corrections include:**
+- `superbase` → `Supabase`
+- `versel` → `Vercel`
+- `get hub` → `GitHub`
+- `java script` → `JavaScript`
+- `mongo db` → `MongoDB`
+- `a p i` → `API`
+- And 70+ more technical terms
+
+**Managing substitutions:**
+1. Open Settings → Substitutions tab
+2. Add custom corrections for your specific terminology
+3. Import/export substitution lists
+4. Changes take effect immediately (no restart needed)
+
+### GUI Features
+
+**System Tray Integration:**
+- Minimizes to system tray for background operation
+- Right-click menu for quick access
+- Visual status indicators
+
+**Settings Management:**
+- Tabbed interface for organized configuration
+- Real-time validation and feedback
+- Import/export functionality
+
+**Transcription History:**
+- Real-time log of all transcriptions
+- Timestamp tracking
+- Auto-scrolling display
 
 ## Command Line Options
 
@@ -155,11 +215,15 @@ src/
 │   └── capture.py         # Audio recording
 ├── transcription/
 │   ├── base.py           # Service interface
-│   ├── local.py          # Local Whisper
-│   └── api.py            # OpenAI API
+│   ├── local.py          # Local Whisper with language support
+│   └── api.py            # OpenAI API with language support
 ├── system/
 │   ├── hotkeys.py        # Global hotkey handling
-│   └── text_insertion.py # Text insertion
+│   └── text_insertion.py # Text insertion with terminal support
+├── text/
+│   └── substitutions.py  # Intelligent text corrections
+├── ui/
+│   └── gui.py            # PyQt6 GUI interface
 └── config/
     └── manager.py        # Configuration management
 ```
@@ -185,6 +249,12 @@ text = service.transcribe(audio_file)
 from system.text_insertion import TextInserter
 inserter = TextInserter()
 inserter.insert_text("Hello world")
+
+# Test text substitutions
+from text.substitutions import SubstitutionManager
+sub_manager = SubstitutionManager()
+corrected = sub_manager.apply_substitutions("I'm using superbase with versel")
+print(corrected)  # "I'm using Supabase with Vercel"
 ```
 
 ## Building Executable
@@ -199,6 +269,15 @@ make build
 ```bash
 make dist              # Creates .tar.gz
 ./scripts/build-all.sh # Multi-platform (requires Docker)
+```
+
+**PyPI Package:**
+```bash
+# Build package for PyPI
+uv run python -m build
+
+# Publish to PyPI (see PUBLISHING.md for details)
+uv run twine upload dist/*
 ```
 
 **Manual PyInstaller:**

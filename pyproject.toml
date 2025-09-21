@@ -5,11 +5,28 @@ build-backend = "hatchling.build"
 [project]
 name = "voicebox"
 version = "1.0.0"
-description = "Cross-platform voice-to-text transcription tool"
+description = "Cross-platform voice-to-text transcription tool with GUI, intelligent text substitutions, and multi-language support"
 authors = [{name = "VoiceBox Team"}]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.8"
+keywords = ["voice", "speech", "transcription", "whisper", "text-to-speech", "hotkey", "productivity"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Desktop Environment",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Office/Business",
+    "Topic :: Utilities",
+]
 dependencies = [
     "sounddevice>=0.4.6",
     "numpy>=1.24.0",
@@ -29,8 +46,15 @@ build = ["pyinstaller>=6.0.0"]
 [project.scripts]
 voicebox = "src.main:main"
 
+[project.urls]
+Homepage = "https://github.com/your-username/voicebox"
+Repository = "https://github.com/your-username/voicebox"
+Documentation = "https://github.com/your-username/voicebox#readme"
+"Bug Reports" = "https://github.com/your-username/voicebox/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+include = ["gui.py"]
 
 [tool.uv]
 dev-dependencies = [
