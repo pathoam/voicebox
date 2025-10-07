@@ -8,13 +8,15 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox, QTextEdit,
     QSystemTrayIcon, QMenu, QGroupBox, QFormLayout, QSpinBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QFileDialog, QTabWidget
+    QFileDialog, QTabWidget, QProgressBar
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
 from PyQt6.QtGui import QIcon, QPixmap, QAction
 
 from main import VoiceBoxApp
 from config.manager import ConfigManager
+from ui.widgets import SearchableComboBox
+from commands.openrouter_models import OpenRouterModels
 
 
 class VoiceBoxWorker(QThread):
@@ -69,6 +71,7 @@ class SettingsWindow(QMainWindow):
         super().__init__()
         self.config_manager = config_manager
         self.voicebox_app = voicebox_app  # Reference to running VoiceBox instance
+        self.model_fetcher = OpenRouterModels()
         self.init_ui()
         self.load_settings()
         
@@ -87,7 +90,11 @@ class SettingsWindow(QMainWindow):
         
         # Create tabs
         self.create_general_tab()
+        self.create_command_tab()
         self.create_substitutions_tab()
+        
+        # Connect tab change signal to start model fetching
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -190,6 +197,212 @@ class SettingsWindow(QMainWindow):
         
         self.tab_widget.addTab(general_tab, "General")
         
+    def create_command_tab(self):
+        """Create the command mode settings tab."""
+        command_tab = QWidget()
+        layout = QVBoxLayout(command_tab)
+        
+        # Enable/disable command mode
+        self.command_enabled_check = QCheckBox("Enable Command Mode")
+        self.command_enabled_check.setToolTip("Enable voice commands with trigger words")
+        self.command_enabled_check.stateChanged.connect(self.on_command_mode_toggled)
+        layout.addWidget(self.command_enabled_check)
+        
+        # Command settings group
+        self.command_group = QGroupBox("Command Settings")
+        command_layout = QFormLayout(self.command_group)
+        
+        # Trigger words
+        trigger_label = QLabel("Trigger Words (comma-separated):")
+        self.triggers_edit = QLineEdit()
+        self.triggers_edit.setPlaceholderText("voicebox, assistant, computer")
+        self.triggers_edit.setToolTip("Words that activate command mode")
+        command_layout.addRow(trigger_label, self.triggers_edit)
+        
+        # Response method
+        self.response_method_combo = QComboBox()
+        self.response_method_combo.addItems(["notification", "clipboard", "console"])
+        self.response_method_combo.setToolTip("How command responses are displayed")
+        command_layout.addRow("Response Method:", self.response_method_combo)
+        
+        layout.addWidget(self.command_group)
+        
+        # LLM Configuration group
+        llm_group = QGroupBox("LLM Configuration")
+        llm_layout = QFormLayout(llm_group)
+        
+        # OpenRouter settings
+        openrouter_label = QLabel("<b>OpenRouter API</b>")
+        llm_layout.addRow(openrouter_label, QLabel())
+        
+        self.openrouter_key_edit = QLineEdit()
+        self.openrouter_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.openrouter_key_edit.setPlaceholderText("sk-or-v1-...")
+        self.openrouter_key_edit.setToolTip("Get key from openrouter.ai")
+        llm_layout.addRow("API Key:", self.openrouter_key_edit)
+        
+        # Model selection with refresh button
+        model_layout = QHBoxLayout()
+        self.openrouter_model_combo = SearchableComboBox()
+        self.openrouter_model_combo.setToolTip("Select or search for OpenRouter models")
+        
+        self.refresh_models_btn = QPushButton("🔄")
+        self.refresh_models_btn.setFixedSize(30, 30)
+        self.refresh_models_btn.setToolTip("Refresh model list from OpenRouter")
+        self.refresh_models_btn.clicked.connect(self.refresh_models)
+        
+        model_layout.addWidget(self.openrouter_model_combo)
+        model_layout.addWidget(self.refresh_models_btn)
+        
+        model_widget = QWidget()
+        model_widget.setLayout(model_layout)
+        llm_layout.addRow("Model:", model_widget)
+        
+        # Connect search functionality (but it will be disabled during data updates)
+        self.openrouter_model_combo.searchTextChanged.connect(self.search_models)
+        
+        # Local LLM settings
+        local_label = QLabel("<b>Local LLM (vLLM/Ollama)</b>")
+        llm_layout.addRow(local_label, QLabel())
+        
+        self.local_endpoint_edit = QLineEdit()
+        self.local_endpoint_edit.setPlaceholderText("http://localhost:8000")
+        self.local_endpoint_edit.setToolTip("Endpoint for local LLM server")
+        llm_layout.addRow("Endpoint:", self.local_endpoint_edit)
+        
+        layout.addWidget(llm_group)
+        
+        # Info text
+        info_text = QLabel(
+            "<i>Command mode allows you to speak commands starting with trigger words.<br>"
+            "Example: \"voicebox, create a shell script to delete all PNGs\"<br>"
+            "Configure either OpenRouter API or a local LLM endpoint.</i>"
+        )
+        info_text.setWordWrap(True)
+        layout.addWidget(info_text)
+        
+        layout.addStretch()
+        
+        self.tab_widget.addTab(command_tab, "Commands")
+        
+        # Set initial enabled state
+        self.on_command_mode_toggled()
+        
+    def on_command_mode_toggled(self):
+        """Handle command mode checkbox toggle."""
+        enabled = self.command_enabled_check.isChecked()
+        self.command_group.setEnabled(enabled)
+        
+        # Load models when command mode is first enabled
+        if enabled and self.openrouter_model_combo.count() == 0:
+            self.start_model_fetching()
+            
+    def on_tab_changed(self, index):
+        """Handle tab changes to start model fetching."""
+        # Check if this is the Commands tab
+        if self.tab_widget.tabText(index) == "Commands":
+            # Start fetching models if not already done
+            if self.openrouter_model_combo.count() == 0:
+                self.start_model_fetching()
+                
+    def start_model_fetching(self):
+        """Start fetching models from OpenRouter API."""
+        # Show loading state
+        self.openrouter_model_combo.clear()
+        self.openrouter_model_combo.addItem("Loading models...", "")
+        self.openrouter_model_combo.setEnabled(False)
+        
+        # Update API key if provided
+        api_key = self.openrouter_key_edit.text().strip()
+        if api_key:
+            self.model_fetcher.api_key = api_key
+            
+        # Start the fetch in background
+        QTimer.singleShot(100, self.fetch_models_background)
+        
+    def fetch_models_background(self):
+        """Fetch models in background thread."""
+        try:
+            print("Starting background model fetch...")
+            # Get real models from API
+            models = self.model_fetcher.get_model_list(force_refresh=True)
+            print(f"Got {len(models)} models from fetcher")
+            
+            # Update UI
+            self.openrouter_model_combo.clear()
+            self.openrouter_model_combo.set_model_data(models)
+            self.openrouter_model_combo.setEnabled(True)
+            
+            print(f"Combo box now has {self.openrouter_model_combo.count()} items")
+            
+            # Set the pending model if we have one
+            if hasattr(self, 'pending_model_id') and self.pending_model_id:
+                self.openrouter_model_combo.set_model_by_id(self.pending_model_id)
+                print(f"Set pending model: {self.pending_model_id}")
+            
+        except Exception as e:
+            print(f"Failed to fetch models: {e}")
+            # Show error state instead of placeholders
+            self.openrouter_model_combo.clear()
+            self.openrouter_model_combo.addItem("Failed to load models - click refresh", "")
+            self.openrouter_model_combo.setEnabled(True)
+            
+            # If we have a pending model ID, at least show that as an option
+            if hasattr(self, 'pending_model_id') and self.pending_model_id:
+                self.openrouter_model_combo.addItem(f"Custom: {self.pending_model_id}", self.pending_model_id)
+                self.openrouter_model_combo.setCurrentIndex(1)  # Select the custom model
+    
+    def refresh_models(self):
+        """Refresh model list from OpenRouter API."""
+        print("Refresh button clicked")
+        self.refresh_models_btn.setEnabled(False)
+        self.refresh_models_btn.setText("...")
+        
+        # Update API key in model fetcher
+        api_key = self.openrouter_key_edit.text().strip()
+        if api_key:
+            self.model_fetcher.api_key = api_key
+            print(f"Using API key: {api_key[:10]}...")
+        else:
+            print("No API key provided")
+            
+        try:
+            # Force refresh from API
+            print("Calling get_model_list with force_refresh=True")
+            models = self.model_fetcher.get_model_list(force_refresh=True)
+            print(f"Refresh got {len(models)} models")
+            
+            self.openrouter_model_combo.set_model_data(models)
+            
+            # Show success message
+            self.refresh_models_btn.setText("✅")
+            QTimer.singleShot(2000, lambda: self.refresh_models_btn.setText("🔄"))
+            
+        except Exception as e:
+            print(f"Failed to refresh models: {e}")
+            import traceback
+            traceback.print_exc()
+            self.refresh_models_btn.setText("❌")
+            QTimer.singleShot(2000, lambda: self.refresh_models_btn.setText("🔄"))
+            
+        finally:
+            self.refresh_models_btn.setEnabled(True)
+            
+    def search_models(self, query):
+        """Filter models based on search query."""
+        try:
+            # Don't search if query is empty or just whitespace
+            if not query or not query.strip():
+                print("Empty search query, ignoring")
+                return
+                
+            print(f"Searching models for: '{query}'")
+            filtered_models = self.model_fetcher.search_models(query)
+            print(f"Search returned {len(filtered_models)} models")
+            self.openrouter_model_combo.set_model_data(filtered_models)
+        except Exception as e:
+            print(f"Search failed: {e}")
+    
     def create_substitutions_tab(self):
         """Create the text substitutions tab."""
         subs_tab = QWidget()
@@ -257,6 +470,22 @@ class SettingsWindow(QMainWindow):
         self.sample_rate_spin.setValue(self.config_manager.get_audio_sample_rate())
         self.channels_spin.setValue(self.config_manager.get_audio_channels())
         
+        # Load command mode settings
+        cmd_config = self.config_manager.get_command_mode_config()
+        self.command_enabled_check.setChecked(cmd_config.get("enabled", False))
+        self.triggers_edit.setText(", ".join(cmd_config.get("triggers", ["voicebox"])))
+        self.response_method_combo.setCurrentText(cmd_config.get("response_method", "notification"))
+        self.openrouter_key_edit.setText(cmd_config.get("openrouter_api_key", ""))
+        
+        # Set model combo box - store the model ID for later setting
+        self.pending_model_id = cmd_config.get("openrouter_model", "meta-llama/llama-3.2-3b-instruct:free")
+        
+        # If models are already loaded, set it now
+        if self.openrouter_model_combo.count() > 0:
+            self.openrouter_model_combo.set_model_by_id(self.pending_model_id)
+        
+        self.local_endpoint_edit.setText(cmd_config.get("local_llm_endpoint", ""))
+        
         # Load substitutions
         self.load_substitutions_table()
         
@@ -270,6 +499,20 @@ class SettingsWindow(QMainWindow):
         self.config_manager.set_setting("text_insertion_method", self.insertion_combo.currentText())
         self.config_manager.set_setting("audio_sample_rate", self.sample_rate_spin.value())
         self.config_manager.set_setting("audio_channels", self.channels_spin.value())
+        
+        # Save command mode settings
+        triggers_text = self.triggers_edit.text().strip()
+        triggers = [t.strip() for t in triggers_text.split(",") if t.strip()] if triggers_text else ["voicebox"]
+        
+        cmd_config = {
+            "enabled": self.command_enabled_check.isChecked(),
+            "triggers": triggers,
+            "response_method": self.response_method_combo.currentText(),
+            "openrouter_api_key": self.openrouter_key_edit.text(),
+            "openrouter_model": self.openrouter_model_combo.get_current_model_id() or "meta-llama/llama-3.2-3b-instruct:free",
+            "local_llm_endpoint": self.local_endpoint_edit.text()
+        }
+        self.config_manager.set_setting("command_mode", cmd_config)
         
         # Save substitutions
         self.save_substitutions()

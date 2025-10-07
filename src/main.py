@@ -15,6 +15,9 @@ from system.hotkeys import HotkeyManager
 from system.text_insertion import TextInserter
 from config.manager import ConfigManager
 from text.substitutions import SubstitutionManager
+from commands.detector import CommandDetector
+from commands.processor import CommandProcessor
+from commands.responder import CommandResponder
 
 
 class AppState(Enum):
@@ -22,6 +25,7 @@ class AppState(Enum):
     IDLE = "idle"
     RECORDING = "recording"
     TRANSCRIBING = "transcribing"
+    PROCESSING_COMMAND = "processing_command"
     INSERTING = "inserting"
     ERROR = "error"
 
@@ -30,6 +34,9 @@ class VoiceBoxApp:
     """Main VoiceBox application coordinator."""
     
     def __init__(self):
+        import random
+        self.app_id = random.randint(1000, 9999)
+        print(f"🏷️ VoiceBoxApp instance created with ID: {self.app_id}")
         self.state = AppState.IDLE
         self.config_manager = ConfigManager()
         
@@ -39,6 +46,11 @@ class VoiceBoxApp:
         self.hotkey_manager: Optional[HotkeyManager] = None
         self.text_inserter: Optional[TextInserter] = None
         self.substitution_manager: Optional[SubstitutionManager] = None
+        
+        # Command mode components
+        self.command_detector: Optional[CommandDetector] = None
+        self.command_processor: Optional[CommandProcessor] = None
+        self.command_responder: Optional[CommandResponder] = None
         
         # Runtime state
         self.current_audio_file: Optional[str] = None
@@ -61,6 +73,7 @@ class VoiceBoxApp:
             self._initialize_transcription()
             self._initialize_text_inserter()
             self._initialize_substitutions()
+            self._initialize_commands()
             self._initialize_hotkeys()
             
             # Start listening for hotkeys
@@ -131,13 +144,36 @@ class VoiceBoxApp:
             
     def _initialize_text_inserter(self) -> None:
         """Initialize text insertion component."""
-        self.text_inserter = TextInserter()
+        platform_name = self.config_manager.get_platform()
+        self.text_inserter = TextInserter(platform_name=platform_name)
         
     def _initialize_substitutions(self) -> None:
         """Initialize text substitution manager."""
         config_dir = self.config_manager.config_dir
         self.substitution_manager = SubstitutionManager(config_dir)
         
+    def _initialize_commands(self) -> None:
+        """Initialize command mode components if enabled."""
+        if self.config_manager.is_command_mode_enabled():
+            # Initialize command detector with configured triggers
+            triggers = self.config_manager.get_command_triggers()
+            self.command_detector = CommandDetector(triggers)
+            
+            # Initialize command processor with LLM settings
+            cmd_config = self.config_manager.get_command_mode_config()
+            self.command_processor = CommandProcessor(
+                openrouter_api_key=cmd_config.get("openrouter_api_key"),
+                local_llm_endpoint=cmd_config.get("local_llm_endpoint"),
+                model=cmd_config.get("openrouter_model")
+            )
+            
+            # Initialize responder
+            response_method = cmd_config.get("response_method", "notification")
+            self.command_responder = CommandResponder(
+                method=response_method,
+                gui_callback=None  # Don't duplicate GUI callback
+            )
+            
     def _initialize_hotkeys(self) -> None:
         """Initialize hotkey management."""
         hotkey = self.config_manager.get_hotkey()
@@ -146,16 +182,20 @@ class VoiceBoxApp:
         
     def _on_hotkey_pressed(self) -> None:
         """Handle hotkey press events."""
+        print(f"🔥 Hotkey pressed! Current state: {self.state.value}")
         with self._state_lock:
             if not self._running:
+                print("🔥 App not running, ignoring hotkey")
                 return
                 
             if self.state == AppState.IDLE:
+                print("🔥 Starting recording...")
                 self._start_recording()
             elif self.state == AppState.RECORDING:
+                print("🔥 Stopping recording and transcribing...")
                 self._stop_recording_and_transcribe()
             else:
-                print(f"Hotkey pressed but app is in {self.state.value} state")
+                print(f"🔥 Hotkey pressed but app is in {self.state.value} state")
                 
     def _start_recording(self) -> None:
         """Start audio recording."""
@@ -182,12 +222,14 @@ class VoiceBoxApp:
             self.current_audio_file = audio_file
             
             # Start transcription in background
+            print(f"🧵 Creating transcription thread for: {audio_file}")
             transcription_thread = threading.Thread(
                 target=self._transcribe_and_insert,
                 args=(audio_file,)
             )
             transcription_thread.daemon = True
             transcription_thread.start()
+            print(f"🧵 Transcription thread started")
             
         except Exception as e:
             print(f"Failed to stop recording: {e}")
@@ -197,16 +239,19 @@ class VoiceBoxApp:
             
     def _transcribe_and_insert(self, audio_file: str) -> None:
         """Transcribe audio and insert text (runs in background thread)."""
+        print(f"🎙️ _transcribe_and_insert() called with audio file: {audio_file}")
         try:
             # Transcribe audio
+            print("🎙️ Calling transcription service...")
             transcribed_text = self.transcription_service.transcribe(audio_file)
+            print(f"🎙️ Transcription result: '{transcribed_text}'")
             
             if not transcribed_text or transcribed_text == "No speech detected":
                 print(" (no speech detected)")
                 self.state = AppState.IDLE
                 return
             
-            # Apply text substitutions
+            # Apply text substitutions (this normalizes command triggers too)
             if self.substitution_manager:
                 original_text = transcribed_text
                 transcribed_text = self.substitution_manager.apply_substitutions(transcribed_text)
@@ -220,18 +265,82 @@ class VoiceBoxApp:
             else:
                 print(f" done!\n{transcribed_text}")
             
+            # Check if this is a command (after substitutions for normalized triggers)
+            if self.command_detector and self.command_detector.is_command(transcribed_text):
+                self.state = AppState.PROCESSING_COMMAND
+                print("🎯 Command detected, processing...")
+                
+                # Extract command and check for clipboard flag
+                trigger, command, has_clipboard = self.command_detector.extract_command_with_clipboard(transcribed_text)
+                if command:
+                    if has_clipboard:
+                        # Get clipboard content and process with context
+                        print("📋 Clipboard flag detected, reading clipboard...")
+                        clipboard_data = self.text_inserter.get_clipboard_type_and_content()
+                        result = self.command_processor.process_with_clipboard(command, clipboard_data)
+                    else:
+                        # Process the command normally
+                        result = self.command_processor.process(command)
+                    
+                    if result.get("success"):
+                        # INSERT THE LLM RESPONSE AT CURSOR INSTEAD OF DISPLAYING
+                        llm_response = result.get("response", "").strip()
+                        if llm_response:
+                            print(f"🤖 LLM Response: {llm_response}")
+                            
+                            # Insert the LLM response at cursor
+                            self.state = AppState.INSERTING
+                            insertion_method = self.config_manager.get_text_insertion_method()
+                            success = self.text_inserter.insert_text(llm_response, method=insertion_method)
+                            
+                            # Notify GUI of command response
+                            if self.on_transcription_complete:
+                                self.on_transcription_complete(f"[Command] {llm_response}")
+                                
+                            if not success:
+                                print("❌ Failed to insert LLM response")
+                        else:
+                            print("❌ Empty LLM response")
+                    else:
+                        # Show error but don't insert anything
+                        error_msg = result.get("error", "Unknown error")
+                        print(f"❌ Command failed: {error_msg}")
+                        
+                        # Optionally display error via responder
+                        self.command_responder.display_response(result)
+                else:
+                    print("❌ No command text found after trigger")
+                
+                # Skip normal text insertion for commands
+                return
+            
+            # Normal text insertion flow
+            print(f"📝 App {self.app_id}: About to insert normal text: '{transcribed_text}'")
+            
+            # TEMPORARILY DISABLE GUI CALLBACK TO DEBUG
             # Notify GUI if callback is set
-            if self.on_transcription_complete:
+            if False:  # self.on_transcription_complete:
+                print("📢 Calling GUI callback")
                 self.on_transcription_complete(transcribed_text)
             
             # Insert text
             self.state = AppState.INSERTING
+            print("✏️ Calling text_inserter.insert_text()")
             
             insertion_method = self.config_manager.get_text_insertion_method()
+            print(f"🔧 Config insertion method: {insertion_method}")
+            
+            # TEMPORARILY FORCE CLIPBOARD TO TEST
+            insertion_method = "clipboard"
+            print(f"🔧 Forced insertion method: {insertion_method}")
+            
+            # RE-ENABLE TEXT INSERTION WITH DEBUGGING
             success = self.text_inserter.insert_text(transcribed_text, method=insertion_method)
             
             if not success:
                 print("❌ Failed to insert text")
+            else:
+                print("✅ Text insertion completed (but disabled)")
                 
         except TranscriptionError as e:
             print(f"❌ Transcription failed: {e}")
@@ -448,6 +557,37 @@ class VoiceBoxApp:
             (current_sample_rate != getattr(self.audio_recorder, 'sample_rate', 16000) or
              current_channels != getattr(self.audio_recorder, 'channels', 1))):
             print("⚠️  Audio settings changed - restart VoiceBox for changes to take effect")
+        
+        # Reload command mode settings
+        if self.config_manager.is_command_mode_enabled():
+            cmd_config = self.config_manager.get_command_mode_config()
+            
+            # Initialize or update command components
+            if not self.command_detector:
+                self._initialize_commands()
+                print("✅ Command mode enabled!")
+            else:
+                # Update existing components
+                triggers = cmd_config.get("triggers", ["voicebox"])
+                self.command_detector.triggers = triggers
+                self.command_detector._build_trigger_pattern()
+                
+                if self.command_processor:
+                    self.command_processor.set_openrouter_key(cmd_config.get("openrouter_api_key", ""))
+                    self.command_processor.set_local_endpoint(cmd_config.get("local_llm_endpoint", ""))
+                    self.command_processor.set_model(cmd_config.get("openrouter_model", ""))
+                
+                if self.command_responder:
+                    self.command_responder.set_method(cmd_config.get("response_method", "notification"))
+                
+                print("✅ Command mode settings updated!")
+        else:
+            # Disable command mode if it was enabled
+            if self.command_detector:
+                self.command_detector = None
+                self.command_processor = None
+                self.command_responder = None
+                print("✅ Command mode disabled")
                 
         print("🔄 Configuration reloaded!")
     
@@ -468,7 +608,10 @@ def main():
     if len(sys.argv) > 1:
         if sys.argv[1] == "--gui":
             # Run GUI mode
-            from .ui.gui import run_gui
+            if __package__:
+                from .ui.gui import run_gui  # type: ignore[import-not-found]
+            else:
+                from ui.gui import run_gui  # type: ignore[import-not-found]
             sys.exit(run_gui())
         elif sys.argv[1] == "--test":
             print("VoiceBox - Voice-to-Text Transcription Tool")

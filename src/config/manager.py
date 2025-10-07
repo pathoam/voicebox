@@ -18,7 +18,16 @@ class ConfigManager:
         "text_insertion_method": "auto",  # "auto", "clipboard", "typing"
         "auto_cleanup_temp_files": True,
         "voice_detection_sensitivity": 0.5,
-        "first_run": True
+        "first_run": True,
+        "platform": "auto",
+        "command_mode": {
+            "enabled": False,
+            "triggers": ["voicebox", "assistant"],
+            "openrouter_api_key": "",
+            "openrouter_model": "meta-llama/llama-3.2-3b-instruct:free",
+            "local_llm_endpoint": "",
+            "response_method": "notification"  # "notification", "clipboard", "console"
+        }
     }
     
     def __init__(self):
@@ -27,6 +36,7 @@ class ConfigManager:
         self.config: Dict[str, Any] = {}
         self._ensure_config_dir()
         self._load_config()
+        self._ensure_platform_setting()
         
     def _get_config_dir(self) -> Path:
         """Get the configuration directory path."""
@@ -73,6 +83,18 @@ class ConfigManager:
             print("No configuration file found, using defaults")
             self._save_config()  # Create initial config file
             
+    def _ensure_platform_setting(self) -> None:
+        """Detect and persist platform information if not already stored."""
+        current_platform = self.config.get("platform", "auto")
+        if current_platform == "auto":
+            detected = self.detect_platform()
+            self.config["platform"] = detected
+            self._save_config()
+        elif current_platform not in {"windows", "macos", "linux"}:
+            detected = self.detect_platform()
+            self.config["platform"] = detected
+            self._save_config()
+
     def _save_config(self) -> bool:
         """Save current configuration to file."""
         try:
@@ -119,6 +141,24 @@ class ConfigManager:
     def is_first_run(self) -> bool:
         """Check if this is the first run."""
         return self.config.get("first_run", True)
+
+    def get_platform(self) -> str:
+        """Return the detected platform name."""
+        return self.config.get("platform", self.detect_platform())
+
+    @staticmethod
+    def detect_platform() -> str:
+        """Detect current operating system."""
+        import platform as _platform
+
+        system = _platform.system().lower()
+        if system.startswith("win"):
+            return "windows"
+        if system.startswith("darwin") or system == "mac" or system == "macos":
+            return "macos"
+        if system.startswith("linux"):
+            return "linux"
+        return "unknown"
         
     def set_setting(self, key: str, value: Any) -> bool:
         """
@@ -160,6 +200,18 @@ class ConfigManager:
     def get_config_path(self) -> str:
         """Get the path to the configuration file."""
         return str(self.config_file)
+    
+    def get_command_mode_config(self) -> dict:
+        """Get command mode configuration."""
+        return self.config.get("command_mode", self.DEFAULT_CONFIG["command_mode"].copy())
+    
+    def is_command_mode_enabled(self) -> bool:
+        """Check if command mode is enabled."""
+        return self.get_command_mode_config().get("enabled", False)
+    
+    def get_command_triggers(self) -> list:
+        """Get list of command triggers."""
+        return self.get_command_mode_config().get("triggers", ["voicebox"])
         
     def validate_config(self) -> Dict[str, str]:
         """

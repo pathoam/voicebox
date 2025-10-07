@@ -14,6 +14,11 @@ class SubstitutionManager:
     """Manages text substitutions for transcribed text."""
     
     DEFAULT_SUBSTITUTIONS = {
+        # Command triggers - normalize variations
+        "voice box": "voicebox",
+        "voice-box": "voicebox", 
+        "voicebox": "voicebox",  # Keep as-is
+        
         # Common tech brand names
         "superbase": "Supabase",
         "super base": "Supabase",

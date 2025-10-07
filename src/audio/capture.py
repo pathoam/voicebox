@@ -92,7 +92,10 @@ class AudioRecorder:
             audio_data.append(self.audio_queue.get())
             
         if not audio_data:
-            return
+            if self.temp_file_path and os.path.exists(self.temp_file_path):
+                os.remove(self.temp_file_path)
+            self.temp_file_path = None
+            raise RuntimeError("No audio captured")
             
         # Concatenate all chunks
         full_audio = np.concatenate(audio_data, axis=0)
