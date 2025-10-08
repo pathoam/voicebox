@@ -323,25 +323,36 @@ class SettingsWindow(QMainWindow):
     def fetch_models_background(self):
         """Fetch models in background thread."""
         try:
-            print("Starting background model fetch...")
-            # Get real models from API
-            models = self.model_fetcher.get_model_list(force_refresh=True)
-            print(f"Got {len(models)} models from fetcher")
+            # First try to get cached models (fast)
+            models = self.model_fetcher.get_model_list(force_refresh=False)
             
-            # Update UI
-            self.openrouter_model_combo.clear()
-            self.openrouter_model_combo.set_model_data(models)
-            self.openrouter_model_combo.setEnabled(True)
+            if models:
+                # Update UI immediately with cached models
+                self.openrouter_model_combo.clear()
+                self.openrouter_model_combo.set_model_data(models)
+                self.openrouter_model_combo.setEnabled(True)
+                
+                # Set the pending model if we have one
+                if hasattr(self, 'pending_model_id') and self.pending_model_id:
+                    self.openrouter_model_combo.set_model_by_id(self.pending_model_id)
+                    pass  # Model set from cache
             
-            print(f"Combo box now has {self.openrouter_model_combo.count()} items")
+            # Then refresh from API in background (if cache is old)
+            # This will update the persistent cache for next time
+            try:
+                fresh_models = self.model_fetcher.get_model_list(force_refresh=True)
+                if fresh_models and len(fresh_models) != len(models):
+                    # Only update UI if the list changed
+                    current_selection = self.openrouter_model_combo.get_selected_model_id()
+                    self.openrouter_model_combo.clear()
+                    self.openrouter_model_combo.set_model_data(fresh_models)
+                    if current_selection:
+                        self.openrouter_model_combo.set_model_by_id(current_selection)
+            except Exception as e:
+                # Silent refresh failure is OK if we have cached models
+                pass
             
-            # Set the pending model if we have one
-            if hasattr(self, 'pending_model_id') and self.pending_model_id:
-                self.openrouter_model_combo.set_model_by_id(self.pending_model_id)
-                print(f"Set pending model: {self.pending_model_id}")
-            
-        except Exception as e:
-            print(f"Failed to fetch models: {e}")
+        except Exception:
             # Show error state instead of placeholders
             self.openrouter_model_combo.clear()
             self.openrouter_model_combo.addItem("Failed to load models - click refresh", "")

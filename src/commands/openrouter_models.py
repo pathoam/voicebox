@@ -1,9 +1,11 @@
 """OpenRouter model management and fetching."""
 
 import json
+import os
 import requests
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
+from pathlib import Path
 
 
 class OpenRouterModels:
@@ -22,6 +24,13 @@ class OpenRouterModels:
         self.api_key = api_key
         self._cache = None
         self._cache_time = None
+        
+        # Set up persistent cache location
+        self.cache_dir = Path.home() / ".config" / "VoiceBox"
+        self.cache_file = self.cache_dir / "openrouter_models_cache.json"
+        
+        # Load persistent cache on init
+        self._load_persistent_cache()
         
     def fetch_models(self, force_refresh: bool = False) -> List[Dict[str, any]]:
         """
@@ -43,47 +52,38 @@ class OpenRouterModels:
             }
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
-                print(f"Making authenticated request to OpenRouter...")
+                # Authenticated request
+                pass
             else:
-                print(f"Making unauthenticated request to OpenRouter...")
-                
-            print(f"Requesting: {self.MODELS_ENDPOINT}")
+                # Unauthenticated request
+                pass
             response = requests.get(
                 self.MODELS_ENDPOINT,
                 headers=headers,
                 timeout=15
             )
             
-            print(f"Response status: {response.status_code}")
+            # Response received
             
             if response.status_code == 200:
                 data = response.json()
                 models = data.get("data", [])
-                print(f"Received {len(models)} models from API")
-                
-                # Debug: print first few models and their capabilities
-                for i, model in enumerate(models[:3]):
-                    model_id = model.get('id', 'no-id')
-                    model_name = model.get('name', 'no-name')
-                    architecture = model.get('architecture', {})
-                    modalities = architecture.get('modalities', []) if isinstance(architecture, dict) else []
-                    print(f"Model {i}: {model_id} - {model_name}")
-                    print(f"  Modalities: {modalities}")
-                    if 'vision' in modalities:
-                        print(f"  🎨 Vision-capable model detected!")
+                # Successfully received models from API
                 
                 # Cache the results
                 self._cache = models
                 self._cache_time = datetime.now()
                 
+                # Save to persistent cache
+                self._save_persistent_cache()
+                
                 return models
             else:
-                print(f"Failed to fetch models: {response.status_code}")
-                print(f"Response body: {response.text[:200]}...")
+                # API request failed
                 return self._get_default_models()
                 
         except requests.RequestException as e:
-            print(f"Error fetching models: {e}")
+            # Network error - will use cached models
             return self._get_default_models()
             
     def get_model_list(self, force_refresh: bool = False) -> List[tuple[str, str, float]]:
@@ -205,8 +205,55 @@ class OpenRouterModels:
         return datetime.now() - self._cache_time < self.CACHE_DURATION
         
     def _get_default_models(self) -> List[Dict[str, any]]:
-        """Return empty list when API is unavailable - no fake data."""
+        """Return cached models when API is unavailable."""
+        # Try to use cached models if available
+        if self._cache:
+            # Return cached models when API unavailable
+            return self._cache
         return []
+    
+    def _load_persistent_cache(self):
+        """Load models from persistent cache file."""
+        try:
+            if self.cache_file.exists():
+                with open(self.cache_file, 'r') as f:
+                    cache_data = json.load(f)
+                    
+                # Parse the cached timestamp
+                cache_time_str = cache_data.get('timestamp')
+                if cache_time_str:
+                    self._cache_time = datetime.fromisoformat(cache_time_str)
+                    self._cache = cache_data.get('models', [])
+                    
+                    # Check if cache is still valid
+                    if self._is_cache_valid():
+                        pass  # Cache loaded successfully
+                    else:
+                        pass  # Cache expired, will refresh
+        except Exception:
+            # Cache load failed, starting fresh
+            self._cache = None
+            self._cache_time = None
+    
+    def _save_persistent_cache(self):
+        """Save current cache to persistent file."""
+        try:
+            # Ensure directory exists
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            if self._cache and self._cache_time:
+                cache_data = {
+                    'timestamp': self._cache_time.isoformat(),
+                    'models': self._cache,
+                    'version': '1.0'
+                }
+                
+                with open(self.cache_file, 'w') as f:
+                    json.dump(cache_data, f, indent=2)
+                
+                pass  # Cache saved successfully
+        except Exception:
+            # Cache save failed, non-critical
         
     def search_models(self, query: str) -> List[tuple[str, str, float]]:
         """
