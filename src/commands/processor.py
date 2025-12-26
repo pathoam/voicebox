@@ -72,8 +72,8 @@ class CommandProcessor:
         if not command:
             return {"success": False, "error": "No command provided"}
         
-        print(f"🤖 Processing command with clipboard: {repr(command)}")
-        print(f"📋 Clipboard type: {clipboard_data.get('type')}, info: {clipboard_data.get('info')}")
+        self.logger.debug(f"Processing command with clipboard: {repr(command)}")
+        self.logger.debug(f"Clipboard type: {clipboard_data.get('type')}, info: {clipboard_data.get('info')}")
         
         # Try local endpoint first
         if self.local_llm_endpoint:
@@ -133,9 +133,9 @@ class CommandProcessor:
             if response.status_code == 200:
                 data = response.json()
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                print(f"🤖 Local LLM raw response: {repr(content)}")
+                self.logger.debug(f"Local LLM raw response: {repr(content)}")
                 if not content or not content.strip():
-                    print("⚠️ Empty content from local LLM")
+                    self.logger.warning("Empty content from local LLM")
                     return {"success": False, "error": "Empty response from local LLM"}
                 return {"success": True, "response": content}
             
@@ -179,7 +179,7 @@ class CommandProcessor:
                 "max_tokens": 200,  # Shorter responses
                 "temperature": 0.7
             }
-            print(f"🤖 OpenRouter request - Model: {self.model}, Command: {repr(command)}")
+            self.logger.debug(f"OpenRouter request - Model: {self.model} Command: {repr(command)}")
             
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -193,10 +193,10 @@ class CommandProcessor:
                 timeout=self.timeout
             )
             
-            print(f"🤖 OpenRouter response status: {response.status_code}")
+            self.logger.debug(f"OpenRouter response status: {response.status_code}")
             if response.status_code == 200:
                 data = response.json()
-                print(f"🤖 OpenRouter response data: {data}")
+                self.logger.debug(f"OpenRouter response data: {data}")
                 message = data.get("choices", [{}])[0].get("message", {})
                 content = message.get("content", "")
                 
@@ -204,12 +204,12 @@ class CommandProcessor:
                 if not content or not content.strip():
                     reasoning = message.get("reasoning", "")
                     if reasoning and reasoning.strip():
-                        print(f"🤖 Found response in reasoning field: {repr(reasoning)}")
+                        self.logger.debug(f"Found response in reasoning field: {repr(reasoning)}")
                         content = reasoning
                 
-                print(f"🤖 OpenRouter final response: {repr(content)}")
+                self.logger.debug(f"OpenRouter final response: {repr(content)}")
                 if not content or not content.strip():
-                    print("⚠️ Empty content from OpenRouter")
+                    self.logger.warning("Empty content from OpenRouter")
                     return {"success": False, "error": "Empty response from OpenRouter"}
                 return {"success": True, "response": content}
             else:
@@ -341,7 +341,7 @@ class CommandProcessor:
                 timeout=self.timeout
             )
             
-            print(f"🤖 OpenRouter response status: {response.status_code}")
+            self.logger.debug(f"OpenRouter response status: {response.status_code}")
             if response.status_code == 404:
                 # 404 often means the model doesn't support the request format
                 if clipboard_data["type"] == "image":
@@ -360,7 +360,7 @@ class CommandProcessor:
                 if not content or not content.strip():
                     reasoning = message.get("reasoning", "")
                     if reasoning and reasoning.strip():
-                        print(f"🤖 Found response in reasoning field: {repr(reasoning)}")
+                        self.logger.debug(f"Found response in reasoning field: {repr(reasoning)}")
                         content = reasoning
                 
                 print(f"🤖 OpenRouter clipboard response: {repr(content)}")

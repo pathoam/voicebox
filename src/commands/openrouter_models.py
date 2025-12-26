@@ -254,7 +254,7 @@ class OpenRouterModels:
                 pass  # Cache saved successfully
         except Exception:
             # Cache save failed, non-critical
-        
+            pass
     def search_models(self, query: str) -> List[tuple[str, str, float]]:
         """
         Search models by name or ID.
