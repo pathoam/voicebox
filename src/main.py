@@ -765,6 +765,7 @@ def main():
 
     # Handle command line arguments
     cli_mode = "--cli" in sys.argv
+    force_mode = "--force" in sys.argv
 
     if len(sys.argv) > 1:
         if sys.argv[1] == "--test":
@@ -788,7 +789,7 @@ def main():
             success = app.test_hotkey_capture()
             sys.exit(0 if success else 1)
         elif sys.argv[1] == "--help":
-            print("Usage: voicebox [--cli|--test|--test-hotkey|--config|--help|--debug]")
+            print("Usage: voicebox [--cli|--test|--test-hotkey|--config|--help|--debug|--force]")
             print("")
             print("VoiceBox runs in GUI mode by default (with system tray icon).")
             print("")
@@ -798,9 +799,18 @@ def main():
             print("  --test-hotkey : Test hotkey capture (diagnose permission issues)")
             print("                  Optionally specify hotkey: --test-hotkey f11")
             print("  --config      : Show configuration file path")
+            print("  --force       : Kill any existing VoiceBox instance before starting")
             print("  --help        : Show this help")
             print("  --debug       : Enable verbose debug logging (can combine with other flags)")
             return
+
+    # Ensure only one instance is running
+    from src.utils.singleton import ensure_single_instance
+
+    if not ensure_single_instance(kill_existing=force_mode):
+        if not force_mode:
+            print("Hint: Use --force to stop the existing instance and start a new one.")
+        sys.exit(1)
 
     # CLI mode if --cli flag is present
     if cli_mode:
