@@ -1,7 +1,7 @@
 from typing import Callable, Optional, Union
 from pynput import keyboard, mouse
 import threading
-from utils.logging import get_logger
+from src.utils.logging import get_logger
 
 
 class HotkeyManager:

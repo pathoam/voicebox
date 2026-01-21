@@ -7,18 +7,18 @@ import select
 from enum import Enum
 from typing import Optional
 
-from audio.capture import AudioRecorder
-from transcription.local import LocalWhisperService
-from transcription.api import APIWhisperService
-from transcription.base import TranscriptionService, TranscriptionError
-from system.hotkeys import HotkeyManager
-from system.text_insertion import TextInserter
-from config.manager import ConfigManager
-from text.substitutions import SubstitutionManager
-from commands.detector import CommandDetector
-from commands.processor import CommandProcessor
-from commands.responder import CommandResponder
-from utils.logging import get_logger
+from src.audio.capture import AudioRecorder
+from src.transcription.local import LocalWhisperService
+from src.transcription.api import APIWhisperService
+from src.transcription.base import TranscriptionService, TranscriptionError
+from src.system.hotkeys import HotkeyManager
+from src.system.text_insertion import TextInserter
+from src.config.manager import ConfigManager
+from src.text.substitutions import SubstitutionManager
+from src.commands.detector import CommandDetector
+from src.commands.processor import CommandProcessor
+from src.commands.responder import CommandResponder
+from src.utils.logging import get_logger
 
 
 class AppState(Enum):
@@ -375,7 +375,7 @@ class VoiceBoxApp:
                 self.logger.info("Text inserted successfully")
 
         except TranscriptionError as e:
-            from utils.error_suggestions import get_suggestion
+            from src.utils.error_suggestions import get_suggestion
 
             suggestion = get_suggestion(e, {"operation": "transcription"})
             self._report_error(
@@ -385,7 +385,7 @@ class VoiceBoxApp:
             )
 
         except Exception as e:
-            from utils.error_suggestions import get_suggestion
+            from src.utils.error_suggestions import get_suggestion
 
             suggestion = get_suggestion(e, {"operation": "transcription"})
             self._report_error(
@@ -418,6 +418,22 @@ class VoiceBoxApp:
                 print(
                     "Please set your OpenAI API key in the config file or switch to local mode."
                 )
+
+        # macOS-specific permissions warning
+        if self.config_manager.get_platform() == "macos":
+            print("\n" + "-" * 50)
+            print("macOS Setup Required:")
+            print("-" * 50)
+            print("VoiceBox needs Accessibility permissions to capture")
+            print("hotkeys and insert text.")
+            print("")
+            print("1. Open System Settings → Privacy & Security → Accessibility")
+            print("2. Click the '+' button and add your terminal app")
+            print("   (Terminal, iTerm2, VS Code, etc.)")
+            print("3. Restart VoiceBox after granting permission")
+            print("")
+            print("Without this, hotkeys will not be detected.")
+            print("-" * 50)
 
         print("\nPress Ctrl+C to exit at any time")
         print("=" * 50 + "\n")
@@ -548,7 +564,7 @@ class VoiceBoxApp:
             self.logger.info(f"Hotkey changed from '{old_hotkey}' to '{new_hotkey}'")
 
         except Exception as e:
-            from utils.error_suggestions import get_suggestion
+            from src.utils.error_suggestions import get_suggestion
 
             suggestion = get_suggestion(e, {"operation": "hotkey_change"})
             self.logger.error(f"Failed to change hotkey: {e}")
@@ -673,13 +689,71 @@ class VoiceBoxApp:
             else False,
         }
 
+    def test_hotkey_capture(self, timeout: int = 10) -> bool:
+        """
+        Test if hotkey capture is working.
+
+        Useful for diagnosing macOS Accessibility permission issues.
+
+        Args:
+            timeout: Seconds to wait for hotkey press
+
+        Returns:
+            True if hotkey was captured, False otherwise
+        """
+        hotkey = self.config_manager.get_hotkey()
+        platform = self.config_manager.get_platform()
+
+        print(f"\nHotkey Test")
+        print("=" * 40)
+        print(f"Platform: {platform}")
+        print(f"Hotkey: {hotkey}")
+        print(f"Timeout: {timeout} seconds")
+        print("=" * 40)
+
+        if platform == "macos":
+            print("\nNote: On macOS, this requires Accessibility permissions.")
+            print("If the test fails, check System Settings → Privacy & Security → Accessibility")
+
+        print(f"\nPress '{hotkey}' within {timeout} seconds...")
+
+        captured = threading.Event()
+
+        def on_hotkey():
+            print("\n✅ Hotkey captured successfully!")
+            captured.set()
+
+        try:
+            test_manager = HotkeyManager(callback=on_hotkey)
+            test_manager.set_hotkey(hotkey)
+            test_manager.start_listening()
+
+            success = captured.wait(timeout=timeout)
+            test_manager.stop_listening()
+
+            if not success:
+                print("\n❌ Hotkey was NOT captured.")
+                print("\nPossible causes:")
+                if platform == "macos":
+                    print("  • Accessibility permissions not granted")
+                    print("  • Terminal app not added to Accessibility list")
+                print("  • Hotkey conflict with another application")
+                print("  • Invalid hotkey combination")
+                print(f"\nTry a different hotkey with: --test-hotkey f11")
+
+            return success
+
+        except Exception as e:
+            print(f"\n❌ Error setting up hotkey listener: {e}")
+            return False
+
 
 def main():
     """Main entry point."""
     # Parse --debug flag first (before other args)
     debug_mode = "--debug" in sys.argv
     if debug_mode:
-        from utils.logging import set_debug_mode
+        from src.utils.logging import set_debug_mode
 
         set_debug_mode(True)
 
@@ -690,15 +764,10 @@ def main():
         logger.info("Debug mode enabled - verbose logging active")
 
     # Handle command line arguments
+    cli_mode = "--cli" in sys.argv
+
     if len(sys.argv) > 1:
-        if sys.argv[1] == "--gui":
-            # Run GUI mode
-            if __package__:
-                from .ui.gui import run_gui  # type: ignore[import-not-found]
-            else:
-                from ui.gui import run_gui  # type: ignore[import-not-found]
-            sys.exit(run_gui())
-        elif sys.argv[1] == "--test":
+        if sys.argv[1] == "--test":
             logger.info("Running in test mode...")
             app = VoiceBoxApp()
             if not app.start():
@@ -710,23 +779,38 @@ def main():
             app = VoiceBoxApp()
             print(f"Configuration file: {app.config_manager.get_config_path()}")
             return
+        elif sys.argv[1] == "--test-hotkey":
+            # Test hotkey capture (useful for debugging macOS permissions)
+            app = VoiceBoxApp()
+            # Allow optional hotkey override: --test-hotkey f11
+            if len(sys.argv) > 2 and not sys.argv[2].startswith("--"):
+                app.config_manager.config["hotkey"] = sys.argv[2]
+            success = app.test_hotkey_capture()
+            sys.exit(0 if success else 1)
         elif sys.argv[1] == "--help":
-            print("Usage: python main.py [--gui|--test|--config|--help|--debug]")
-            print("  --gui    : Run with graphical interface")
-            print("  --test   : Test initialization and exit")
-            print("  --config : Show configuration file path")
-            print("  --help   : Show this help")
-            print("  --debug  : Enable verbose debug logging")
+            print("Usage: voicebox [--cli|--test|--test-hotkey|--config|--help|--debug]")
+            print("")
+            print("VoiceBox runs in GUI mode by default (with system tray icon).")
+            print("")
+            print("Options:")
+            print("  --cli         : Run in command-line mode (no GUI)")
+            print("  --test        : Test initialization and exit")
+            print("  --test-hotkey : Test hotkey capture (diagnose permission issues)")
+            print("                  Optionally specify hotkey: --test-hotkey f11")
+            print("  --config      : Show configuration file path")
+            print("  --help        : Show this help")
+            print("  --debug       : Enable verbose debug logging (can combine with other flags)")
             return
-        elif sys.argv[1] == "--debug":
-            # Already handled, skip
-            pass
 
-    # Run CLI mode by default
-    logger.info("VoiceBox - Voice-to-Text Transcription Tool")
-
-    app = VoiceBoxApp()
-    app.run_forever()
+    # CLI mode if --cli flag is present
+    if cli_mode:
+        logger.info("VoiceBox - Voice-to-Text Transcription Tool (CLI mode)")
+        app = VoiceBoxApp()
+        app.run_forever()
+    else:
+        # GUI mode is the default
+        from src.ui.gui import run_gui
+        sys.exit(run_gui())
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ class TextInserter:
             return result
 
         except (pyperclip.PyperclipException, OSError) as e:
-            from utils.logging import get_logger
+            from src.utils.logging import get_logger
 
             logger = get_logger(__name__)
             logger.error(f"Text insertion failed: {e}")
@@ -88,7 +88,7 @@ class TextInserter:
             return True
 
         except (pyperclip.PyperclipException, OSError) as e:
-            from utils.logging import get_logger
+            from src.utils.logging import get_logger
 
             logger = get_logger(__name__)
             logger.error(f"Clipboard operation failed: {e}")
@@ -177,7 +177,7 @@ class TextInserter:
                 else:
                     pass
             except Exception as e:
-                from utils.logging import get_logger
+                from src.utils.logging import get_logger
 
                 logger = get_logger(__name__)
                 logger.debug(f"Error checking clipboard for image: {e}")
@@ -188,7 +188,7 @@ class TextInserter:
             if text and text.strip():
                 return {"type": "text", "content": text, "info": f"{len(text)} chars"}
         except Exception as e:
-            from utils.logging import get_logger
+            from src.utils.logging import get_logger
 
             logger = get_logger(__name__)
             logger.debug(f"Error reading clipboard text: {e}")

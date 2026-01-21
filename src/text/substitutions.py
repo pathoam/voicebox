@@ -115,6 +115,7 @@ class SubstitutionManager:
         self.config_dir = config_dir
         self.substitutions_file = config_dir / "substitutions.json"
         self.substitutions: Dict[str, str] = {}
+        self._deleted_defaults: List[str] = []
 
         self.load_substitutions()
 
@@ -138,15 +139,32 @@ class SubstitutionManager:
         """Load substitutions from config file."""
         # Start with defaults
         self.substitutions = self.DEFAULT_SUBSTITUTIONS.copy()
+        self._deleted_defaults = []
 
         # Load user substitutions if file exists
         if self.substitutions_file.exists():
             try:
                 with open(self.substitutions_file, "r", encoding="utf-8") as f:
-                    user_substitutions = json.load(f)
-                    # User substitutions override defaults
-                    self.substitutions.update(user_substitutions)
-                print(f"Loaded {len(user_substitutions)} user substitutions")
+                    user_data = json.load(f)
+
+                # Extract deleted defaults list (stored under special key)
+                if "_deleted" in user_data:
+                    self._deleted_defaults = user_data["_deleted"]
+                    # Apply deletions
+                    for pattern in self._deleted_defaults:
+                        if pattern in self.substitutions:
+                            del self.substitutions[pattern]
+
+                # Extract and apply user substitutions (excluding special key)
+                user_substitutions = {
+                    k: v for k, v in user_data.items() if k != "_deleted"
+                }
+                # User substitutions override defaults
+                self.substitutions.update(user_substitutions)
+
+                print(
+                    f"Loaded {len(user_substitutions)} user substitutions, {len(self._deleted_defaults)} deletions"
+                )
             except Exception as e:
                 print(f"Failed to load substitutions: {e}")
 
@@ -164,8 +182,15 @@ class SubstitutionManager:
                 or self.DEFAULT_SUBSTITUTIONS[k] != v
             }
 
+            # Create data structure to save (may include deletions)
+            save_data = user_substitutions.copy()
+
+            # Add deleted defaults list to save file
+            if self._deleted_defaults:
+                save_data["_deleted"] = self._deleted_defaults
+
             with open(self.substitutions_file, "w", encoding="utf-8") as f:
-                json.dump(user_substitutions, f, indent=2, ensure_ascii=False)
+                json.dump(save_data, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
             print(f"Failed to save substitutions: {e}")
@@ -204,6 +229,11 @@ class SubstitutionManager:
         # Convert to lowercase for the pattern
         pattern = pattern.lower()
         self.substitutions[pattern] = replacement
+
+        # Remove from deletion list if this was a deleted default
+        if pattern in self._deleted_defaults:
+            self._deleted_defaults.remove(pattern)
+
         self.save_substitutions()
 
     def remove_substitution(self, pattern: str) -> bool:
@@ -211,6 +241,15 @@ class SubstitutionManager:
         pattern = pattern.lower()
         if pattern in self.substitutions:
             del self.substitutions[pattern]
+            # Track if this was a default substitution
+            if pattern in self.DEFAULT_SUBSTITUTIONS:
+                if pattern not in self._deleted_defaults:
+                    self._deleted_defaults.append(pattern)
+            else:
+                # If it was a user substitution, remove from deletion list
+                # (in case it was previously a default that got deleted and re-added)
+                if pattern in self._deleted_defaults:
+                    self._deleted_defaults.remove(pattern)
             self.save_substitutions()
             return True
         return False
@@ -222,6 +261,7 @@ class SubstitutionManager:
     def reset_to_defaults(self) -> None:
         """Reset substitutions to defaults."""
         self.substitutions = self.DEFAULT_SUBSTITUTIONS.copy()
+        self._deleted_defaults = []
         # Delete user substitutions file
         if self.substitutions_file.exists():
             self.substitutions_file.unlink()
@@ -233,7 +273,21 @@ class SubstitutionManager:
                 imported = json.load(f)
 
             if isinstance(imported, dict):
+                # Extract deletions if present
+                if "_deleted" in imported:
+                    for pattern in imported["_deleted"]:
+                        if pattern not in self._deleted_defaults:
+                            self._deleted_defaults.append(pattern)
+                    del imported["_deleted"]
+
+                # Import substitutions
                 self.substitutions.update(imported)
+
+                # Apply deletions
+                for pattern in self._deleted_defaults:
+                    if pattern in self.substitutions:
+                        del self.substitutions[pattern]
+
                 self.save_substitutions()
                 return True
         except Exception as e:
@@ -243,8 +297,13 @@ class SubstitutionManager:
     def export_substitutions(self, file_path: str) -> bool:
         """Export substitutions to a JSON file."""
         try:
+            # Export with deletions included
+            export_data = self.substitutions.copy()
+            if self._deleted_defaults:
+                export_data["_deleted"] = self._deleted_defaults
+
             with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(self.substitutions, f, indent=2, ensure_ascii=False)
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
             print(f"Failed to export substitutions: {e}")

@@ -3,7 +3,7 @@ import os
 from typing import Any, Optional, Dict
 from pathlib import Path
 
-from utils.logging import get_logger
+from src.utils.logging import get_logger
 
 
 class ConfigManager:
@@ -11,7 +11,7 @@ class ConfigManager:
 
     DEFAULT_CONFIG = {
         "transcription_mode": "local",  # "local" or "api"
-        "hotkey": "ctrl+space",  # Clean combination that avoids terminal escape sequences
+        "hotkey": "ctrl+space",  # Default for Linux/Windows; macOS uses f12 (see _get_platform_default_hotkey)
         "api_key": "",
         "local_model_size": "base",
         "transcription_language": "auto",  # Language for Whisper transcription
@@ -84,6 +84,8 @@ class ConfigManager:
                 self.logger.error(f"Failed to load config: {e}")
                 self.logger.info("Using default configuration")
         else:
+            # First run - use platform-specific default hotkey
+            self.config["hotkey"] = self._get_platform_default_hotkey()
             self.logger.info("No configuration file found, using defaults")
             self._save_config()  # Create initial config file
 
@@ -163,6 +165,16 @@ class ConfigManager:
         if system.startswith("linux"):
             return "linux"
         return "unknown"
+
+    @classmethod
+    def _get_platform_default_hotkey(cls) -> str:
+        """Get platform-appropriate default hotkey."""
+        platform = cls.detect_platform()
+        if platform == "macos":
+            # macOS: Ctrl+Space conflicts with Spotlight/input methods
+            return "f12"
+        # Linux/Windows: ctrl+space works well
+        return "ctrl+space"
 
     def set_setting(self, key: str, value: Any) -> bool:
         """

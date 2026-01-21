@@ -7,7 +7,7 @@ from typing import Optional
 import threading
 import queue
 
-from utils.logging import get_logger
+from src.utils.logging import get_logger
 
 
 class AudioRecorder:
@@ -82,7 +82,7 @@ class AudioRecorder:
                     sd.sleep(100)  # Sleep for 100ms
 
         except Exception as e:
-            from utils.error_suggestions import get_suggestion
+            from src.utils.error_suggestions import get_suggestion
 
             suggestion = get_suggestion(e, {"operation": "audio_recording"})
             self.logger.error(f"Audio recording failed: {e}")

@@ -55,7 +55,6 @@ Documentation = "https://github.com/your-username/voicebox#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
-include = ["gui.py"]
 
 [tool.uv]
 dev-dependencies = [

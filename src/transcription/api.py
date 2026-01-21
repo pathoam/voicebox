@@ -3,8 +3,8 @@ from typing import Optional
 from openai import OpenAI
 from .base import TranscriptionService, TranscriptionError
 
-from utils.logging import get_logger
-from utils.retry import retry_once
+from src.utils.logging import get_logger
+from src.utils.retry import retry_once
 import requests
 
 
@@ -91,21 +91,21 @@ class APIWhisperService(TranscriptionService):
             return transcribed_text
 
         except requests.Timeout as e:
-            from utils.error_suggestions import get_suggestion
+            from src.utils.error_suggestions import get_suggestion
 
             suggestion = get_suggestion(e, {"operation": "api_transcription"})
             self.logger.warning(f"OpenAI API timeout: {e}")
             raise TranscriptionError(f"API timeout: {e}")
 
         except requests.ConnectionError as e:
-            from utils.error_suggestions import get_suggestion
+            from src.utils.error_suggestions import get_suggestion
 
             suggestion = get_suggestion(e, {"operation": "api_transcription"})
             self.logger.warning(f"OpenAI API connection failed: {e}")
             raise TranscriptionError(f"Connection failed: {e}")
 
         except Exception as e:
-            from utils.error_suggestions import get_suggestion
+            from src.utils.error_suggestions import get_suggestion
 
             suggestion = get_suggestion(e, {"operation": "api_transcription"})
             self.logger.error(f"API transcription failed: {e}")

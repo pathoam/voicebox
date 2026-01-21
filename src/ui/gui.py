@@ -31,10 +31,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
 from PyQt6.QtGui import QIcon, QPixmap, QAction
 
-from main import VoiceBoxApp
-from config.manager import ConfigManager
-from ui.widgets import SearchableComboBox
-from commands.openrouter_models import OpenRouterModels
+from src.main import VoiceBoxApp
+from src.config.manager import ConfigManager
+from src.ui.widgets import SearchableComboBox
+from src.commands.openrouter_models import OpenRouterModels
 
 
 class VoiceBoxWorker(QThread):
@@ -600,7 +600,7 @@ class SettingsWindow(QMainWindow):
     def load_substitutions_table(self):
         """Load substitutions into the table."""
         # Import substitution manager to access current substitutions
-        from text.substitutions import SubstitutionManager
+        from src.text.substitutions import SubstitutionManager
 
         config_dir = self.config_manager.config_dir
         sub_manager = SubstitutionManager(config_dir)
@@ -633,7 +633,7 @@ class SettingsWindow(QMainWindow):
             self, "Import Substitutions", "", "JSON Files (*.json)"
         )
         if file_path:
-            from text.substitutions import SubstitutionManager
+            from src.text.substitutions import SubstitutionManager
 
             config_dir = self.config_manager.config_dir
             sub_manager = SubstitutionManager(config_dir)
@@ -652,7 +652,7 @@ class SettingsWindow(QMainWindow):
             self, "Export Substitutions", "substitutions.json", "JSON Files (*.json)"
         )
         if file_path:
-            from text.substitutions import SubstitutionManager
+            from src.text.substitutions import SubstitutionManager
 
             config_dir = self.config_manager.config_dir
             sub_manager = SubstitutionManager(config_dir)
@@ -674,7 +674,7 @@ class SettingsWindow(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            from text.substitutions import SubstitutionManager
+            from src.text.substitutions import SubstitutionManager
 
             config_dir = self.config_manager.config_dir
             sub_manager = SubstitutionManager(config_dir)
@@ -683,15 +683,16 @@ class SettingsWindow(QMainWindow):
 
     def save_substitutions(self):
         """Save substitutions from table."""
-        from text.substitutions import SubstitutionManager
+        from src.text.substitutions import SubstitutionManager
 
         config_dir = self.config_manager.config_dir
         sub_manager = SubstitutionManager(config_dir)
 
-        # Clear current substitutions (keep only defaults)
+        # Clear current substitutions (keep only defaults, clear deletions)
         sub_manager.reset_to_defaults()
 
-        # Add substitutions from table
+        # Collect all patterns from the table
+        table_patterns = set()
         for row in range(self.substitutions_table.rowCount()):
             pattern_item = self.substitutions_table.item(row, 0)
             replacement_item = self.substitutions_table.item(row, 1)
@@ -701,7 +702,17 @@ class SettingsWindow(QMainWindow):
                 replacement = replacement_item.text().strip()
 
                 if pattern and replacement:
+                    table_patterns.add(pattern.lower())
                     sub_manager.add_substitution(pattern, replacement)
+
+        # Mark any defaults that are NOT in the table as deleted
+        for default_pattern in sub_manager.DEFAULT_SUBSTITUTIONS:
+            if default_pattern.lower() not in table_patterns:
+                if default_pattern not in sub_manager._deleted_defaults:
+                    sub_manager._deleted_defaults.append(default_pattern)
+
+        # Save the updated state
+        sub_manager.save_substitutions()
 
 
 class VoiceBoxGUI(QMainWindow):
@@ -943,7 +954,7 @@ class VoiceBoxGUI(QMainWindow):
 
 def run_gui():
     """Run the GUI application."""
-    from utils.logging import set_debug_mode, get_logger
+    from src.utils.logging import set_debug_mode, get_logger
     import signal
 
     # Check for --debug flag

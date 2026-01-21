@@ -6,7 +6,7 @@ import subprocess
 from typing import Dict, Any, Optional
 import pyperclip
 
-from utils.logging import get_logger
+from src.utils.logging import get_logger
 
 
 class CommandResponder:

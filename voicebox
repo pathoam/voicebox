@@ -1,19 +1,12 @@
 #!/bin/bash
 # VoiceBox launcher script
+# GUI mode is the default. Use --cli for command-line mode.
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Add src to PYTHONPATH
-export PYTHONPATH="$SCRIPT_DIR/src:$PYTHONPATH"
-
 # Change to script directory
 cd "$SCRIPT_DIR"
 
-# Run VoiceBox
-if [ "$1" == "--gui" ] || [ "$1" == "--debug" ] || [ "$1" == "--help" ]; then
-    # Run with uv
-    uv run --no-sync python3 gui.py "$@"
-else
-    uv run --no-sync python3 src/main.py "$@"
-fi
+# Run VoiceBox with uv (handles virtual environment)
+uv run python3 src/main.py "$@"
