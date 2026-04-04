@@ -10,7 +10,7 @@ class ConfigManager:
     """Configuration management for VoiceBox."""
 
     DEFAULT_CONFIG = {
-        "transcription_mode": "local",  # "local" or "api"
+        "transcription_mode": "qwen",  # "local", "api", or "qwen"
         "hotkey": "ctrl+space",  # Default for Linux/Windows; macOS uses f12 (see _get_platform_default_hotkey)
         "api_key": "",
         "local_model_size": "base",
@@ -22,6 +22,9 @@ class ConfigManager:
         "voice_detection_sensitivity": 0.5,
         "first_run": True,
         "platform": "auto",
+        "qwen_model_size": "0.6B",          # "0.6B" or "1.7B"
+        "qwen_backend": "auto",             # "auto" or "gpu"
+        "qwen_streaming_enabled": True,     # Enable streaming during recording
         "command_mode": {
             "enabled": False,
             "triggers": ["voicebox", "assistant"],
@@ -106,10 +109,20 @@ class ConfigManager:
         try:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
+            self._set_restrictive_permissions()
             return True
         except Exception as e:
-            print(f"Failed to save config: {e}")
+            self.logger.error(f"Failed to save config: {e}")
             return False
+
+    def _set_restrictive_permissions(self) -> None:
+        """Set restrictive file permissions on config file (Unix only)."""
+        import platform as _platform
+        if _platform.system() in ("Linux", "Darwin"):
+            try:
+                os.chmod(self.config_file, 0o600)
+            except OSError as e:
+                self.logger.warning(f"Failed to set config file permissions: {e}")
 
     def get_transcription_mode(self) -> str:
         """Get transcription mode (local or api)."""
@@ -192,16 +205,16 @@ class ConfigManager:
             self.config[key] = value
 
             if self._save_config():
-                print(f"Setting updated: {key} = {value}")
+                self.logger.debug(f"Setting updated: {key} = {value}")
                 if key == "first_run" and value is False:
-                    print("First run setup completed")
+                    self.logger.info("First run setup completed")
                 return True
             else:
                 # Revert on save failure
                 self.config[key] = old_value
                 return False
         else:
-            print(f"Unknown configuration key: {key}")
+            self.logger.warning(f"Unknown configuration key: {key}")
             return False
 
     def get_setting(self, key: str, default: Any = None) -> Any:
@@ -216,6 +229,14 @@ class ConfigManager:
     def get_config_path(self) -> str:
         """Get the path to the configuration file."""
         return str(self.config_file)
+
+    def get_qwen_config(self) -> dict:
+        """Get Qwen ASR configuration."""
+        return {
+            "model_size": self.config.get("qwen_model_size", "0.6B"),
+            "backend": self.config.get("qwen_backend", "auto"),
+            "streaming_enabled": self.config.get("qwen_streaming_enabled", True),
+        }
 
     def get_command_mode_config(self) -> dict:
         """Get command mode configuration."""
@@ -241,8 +262,8 @@ class ConfigManager:
         errors = {}
 
         # Validate transcription mode
-        if self.config.get("transcription_mode") not in ["local", "api"]:
-            errors["transcription_mode"] = "Must be 'local' or 'api'"
+        if self.config.get("transcription_mode") not in ["local", "api", "qwen"]:
+            errors["transcription_mode"] = "Must be 'local', 'api', or 'qwen'"
 
         # Validate API key if using API mode
         if self.config.get("transcription_mode") == "api":
@@ -253,6 +274,13 @@ class ConfigManager:
         valid_models = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
         if self.config.get("local_model_size") not in valid_models:
             errors["local_model_size"] = f"Must be one of: {valid_models}"
+
+        # Validate qwen-specific settings
+        if self.config.get("transcription_mode") == "qwen":
+            if self.config.get("qwen_model_size") not in ["0.6B", "1.7B"]:
+                errors["qwen_model_size"] = "Must be '0.6B' or '1.7B'"
+            if self.config.get("qwen_backend") not in ["auto", "gpu"]:
+                errors["qwen_backend"] = "Must be 'auto' or 'gpu'"
 
         # Validate sample rate
         sample_rate = self.config.get("audio_sample_rate")
@@ -268,7 +296,7 @@ class ConfigManager:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
-            print(f"Failed to export config: {e}")
+            self.logger.error(f"Failed to export config: {e}")
             return False
 
     def import_config(self, file_path: str) -> bool:
@@ -284,5 +312,5 @@ class ConfigManager:
 
             return self._save_config()
         except Exception as e:
-            print(f"Failed to import config: {e}")
+            self.logger.error(f"Failed to import config: {e}")
             return False

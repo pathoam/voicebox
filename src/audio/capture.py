@@ -20,7 +20,16 @@ class AudioRecorder:
         self.audio_queue = queue.Queue()
         self.recording_thread: Optional[threading.Thread] = None
         self.temp_file_path: Optional[str] = None
+        self._chunk_callback = None
         self.logger = get_logger(__name__)
+
+    def set_chunk_callback(self, callback) -> None:
+        """Set a callback to receive audio chunks in real-time during recording."""
+        self._chunk_callback = callback
+
+    def clear_chunk_callback(self) -> None:
+        """Remove the chunk callback."""
+        self._chunk_callback = None
 
     def start_recording(self) -> None:
         """Start recording audio from the default microphone."""
@@ -68,7 +77,13 @@ class AudioRecorder:
             if status:
                 self.logger.debug(f"Audio callback status: {status}")
             if self.is_recording_flag:
-                self.audio_queue.put(indata.copy())
+                chunk = indata.copy()
+                self.audio_queue.put(chunk)
+                if self._chunk_callback:
+                    try:
+                        self._chunk_callback(chunk)
+                    except Exception as e:
+                        self.logger.debug(f"Chunk callback error: {e}")
 
         try:
             with sd.InputStream(

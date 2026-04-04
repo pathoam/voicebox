@@ -45,21 +45,6 @@ class APIWhisperService(TranscriptionService):
                 "OpenAI client not initialized. Please provide a valid API key."
             )
 
-    def transcribe(self, audio_file_path: str) -> str:
-        """
-        Transcribe audio file using OpenAI Whisper API.
-
-        Args:
-            audio_file_path: Path to audio file
-
-        Returns:
-            Transcribed text
-        """
-        if not self.client:
-            raise TranscriptionError(
-                "OpenAI client not initialized. Please provide a valid API key."
-            )
-
         if not os.path.exists(audio_file_path):
             raise TranscriptionError(f"Audio file not found: {audio_file_path}")
 

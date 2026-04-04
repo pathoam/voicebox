@@ -9,7 +9,7 @@ description = "Cross-platform voice-to-text transcription tool with GUI, intelli
 authors = [{name = "VoiceBox Team"}]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 keywords = ["voice", "speech", "transcription", "whisper", "text-to-speech", "hotkey", "productivity"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -18,8 +18,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -39,6 +37,7 @@ dependencies = [
     "packaging>=23.0",
     "PyQt6>=6.5.0",
     "requests>=2.31.0",
+    "qwen-asr>=0.0.6",
 ]
 
 [project.optional-dependencies]

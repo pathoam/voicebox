@@ -6,6 +6,8 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 import re
 
+from src.utils.logging import get_logger
+
 
 class CommandProcessor:
     """Processes commands using built-in handlers or LLM."""
@@ -26,7 +28,8 @@ class CommandProcessor:
         self.local_llm_endpoint = local_llm_endpoint
         self.model = model
         self.timeout = 30
-        
+        self.logger = get_logger(__name__)
+
         # Track models that don't support system messages
         self.no_system_models = set()
         
@@ -166,7 +169,7 @@ class CommandProcessor:
         
         # Check if this model is known to not support system messages
         if self.model in self.no_system_models:
-            print(f"🤖 Model {self.model} known to not support system messages, using direct approach")
+            self.logger.debug(f"Model {self.model} known to not support system messages, using direct approach")
             return self._query_openrouter_no_system(command)
             
         try:
@@ -215,16 +218,16 @@ class CommandProcessor:
             else:
                 try:
                     error_data = response.json()
-                    print(f"🤖 OpenRouter error response: {error_data}")
+                    self.logger.warning(f"OpenRouter error response: {error_data}")
                     error_msg = error_data.get("error", {}).get("message", "Unknown error")
-                    
+
                     # Check if the error is about system messages not being supported
                     error_lower = error_msg.lower()
                     raw_error = str(error_data.get("error", {}).get("metadata", {}).get("raw", "")).lower()
-                    
-                    if ("instruction" in error_lower or "system" in error_lower or 
+
+                    if ("instruction" in error_lower or "system" in error_lower or
                         "developer instruction" in raw_error or "instruction is not enabled" in raw_error):
-                        print(f"🔄 Model {self.model} doesn't support system messages, remembering and retrying...")
+                        self.logger.debug(f"Model {self.model} doesn't support system messages, remembering and retrying...")
                         self.no_system_models.add(self.model)
                         return self._query_openrouter_no_system(command)
                         
@@ -249,7 +252,7 @@ class CommandProcessor:
                 "max_tokens": 200,
                 "temperature": 0.7
             }
-            print(f"🤖 OpenRouter retry (no system) - Model: {self.model}")
+            self.logger.debug(f"OpenRouter retry (no system) - Model: {self.model}")
             
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -267,7 +270,7 @@ class CommandProcessor:
                 data = response.json()
                 message = data.get("choices", [{}])[0].get("message", {})
                 content = message.get("content", "")
-                print(f"🤖 OpenRouter retry response: {repr(content)}")
+                self.logger.debug(f"OpenRouter retry response: {repr(content)}")
                 
                 if not content or not content.strip():
                     return {"success": False, "error": "Empty response from OpenRouter (retry)"}
@@ -289,7 +292,7 @@ class CommandProcessor:
         try:
             if clipboard_data["type"] == "image":
                 # Handle image clipboard content - let the API respond with its own error if vision isn't supported
-                print(f"🖼️ Attempting to send image to model {self.model}")
+                self.logger.debug(f"Attempting to send image to model {self.model}")
                 content = self._build_multimodal_content(command, clipboard_data, use_system_message)
                 messages = [{"role": "user", "content": content}]
                 
@@ -315,11 +318,11 @@ class CommandProcessor:
                 "temperature": 0.7
             }
             
-            print(f"🤖 OpenRouter clipboard request - Model: {self.model}")
-            print(f"📋 Content type: {clipboard_data['type']}")
+            self.logger.debug(f"OpenRouter clipboard request - Model: {self.model}")
+            self.logger.debug(f"Content type: {clipboard_data['type']}")
             if clipboard_data["type"] == "image":
-                print(f"📋 Image info: {clipboard_data.get('info', 'unknown')}")
-            
+                self.logger.debug(f"Image info: {clipboard_data.get('info', 'unknown')}")
+
             # Debug: log the payload structure (without the base64 data)
             if clipboard_data["type"] == "image":
                 debug_payload = payload.copy()
@@ -327,7 +330,7 @@ class CommandProcessor:
                     {"type": "text", "text": f"[COMMAND: {command}]"},
                     {"type": "image_url", "image_url": {"url": "[BASE64_IMAGE_DATA]"}}
                 ]}]
-                print(f"🤖 Sending multimodal payload structure: {debug_payload}")
+                self.logger.debug(f"Sending multimodal payload structure: {debug_payload}")
             
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -345,14 +348,14 @@ class CommandProcessor:
             if response.status_code == 404:
                 # 404 often means the model doesn't support the request format
                 if clipboard_data["type"] == "image":
-                    print(f"⚠️ Model {self.model} likely doesn't support image input (404 error)")
+                    self.logger.warning(f"Model {self.model} likely doesn't support image input (404 error)")
                     return {"success": False, "error": f"Model {self.model} doesn't support image input"}
                 else:
-                    print(f"⚠️ 404 error - endpoint or model issue")
+                    self.logger.warning(f"404 error - endpoint or model issue")
                     
             if response.status_code == 200:
                 data = response.json()
-                print(f"🤖 Full API response: {data}")
+                self.logger.debug(f"Full API response: {data}")
                 message = data.get("choices", [{}])[0].get("message", {})
                 content = message.get("content", "")
                 
@@ -363,9 +366,9 @@ class CommandProcessor:
                         self.logger.debug(f"Found response in reasoning field: {repr(reasoning)}")
                         content = reasoning
                 
-                print(f"🤖 OpenRouter clipboard response: {repr(content)}")
+                self.logger.debug(f"OpenRouter clipboard response: {repr(content)}")
                 if not content or not content.strip():
-                    print(f"⚠️ Empty response - full message object: {message}")
+                    self.logger.warning(f"Empty response - full message object: {message}")
                     return {"success": False, "error": "Empty response from OpenRouter"}
                 return {"success": True, "response": content}
             else:
@@ -379,7 +382,7 @@ class CommandProcessor:
                     
                     if ("instruction" in error_lower or "system" in error_lower or 
                         "developer instruction" in raw_error or "instruction is not enabled" in raw_error):
-                        print(f"🔄 Model {self.model} doesn't support system messages, remembering and retrying...")
+                        self.logger.debug(f"Model {self.model} doesn't support system messages, remembering and retrying...")
                         self.no_system_models.add(self.model)
                         return self._query_openrouter_with_clipboard(command, clipboard_data)
                         
@@ -411,7 +414,7 @@ class CommandProcessor:
             from PIL import Image
             
             img = clipboard_data["content"]
-            print(f"🖼️ Processing image: {img.size} {img.mode}")
+            self.logger.debug(f"Processing image: {img.size} {img.mode}")
             
             # Resize image if too large (many APIs have size limits)
             max_size = 1024
@@ -419,7 +422,7 @@ class CommandProcessor:
                 ratio = max_size / max(img.size)
                 new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
                 img = img.resize(new_size, Image.Resampling.LANCZOS)
-                print(f"🖼️ Resized image to: {img.size}")
+                self.logger.debug(f"Resized image to: {img.size}")
             
             # Convert to RGB if necessary (for JPEG compatibility)
             if img.mode in ('RGBA', 'LA', 'P'):
@@ -428,13 +431,13 @@ class CommandProcessor:
                     img = img.convert('RGBA')
                 background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
                 img = background
-                print(f"🖼️ Converted to RGB from {clipboard_data['content'].mode}")
+                self.logger.debug(f"Converted to RGB from {clipboard_data['content'].mode}")
             
             # Save to bytes buffer with higher quality
             buffer = io.BytesIO()
             img.save(buffer, format='JPEG', quality=95, optimize=True)
             img_bytes = buffer.getvalue()
-            print(f"🖼️ Image encoded: {len(img_bytes)} bytes")
+            self.logger.debug(f"Image encoded: {len(img_bytes)} bytes")
             
             # Encode to base64
             img_b64 = base64.b64encode(img_bytes).decode('utf-8')
@@ -449,7 +452,7 @@ class CommandProcessor:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]
         except Exception as e:
-            print(f"🖼️ Image processing error: {e}")
+            self.logger.error(f"Image processing error: {e}")
             raise RuntimeError(f"Failed to process image: {e}")
             
     def _handle_time(self, command: str) -> Dict[str, Any]:

@@ -5,6 +5,10 @@ import base64
 import io
 from pynput.keyboard import Controller as KeyboardController, Key
 
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 try:
     from PIL import Image, ImageGrab
 
@@ -97,14 +101,14 @@ class TextInserter:
     def _insert_via_typing(self, text: str) -> bool:
         """Insert text by simulating typing."""
         try:
-            print(f"⌨️ About to type: '{text}'")
+            logger.debug(f"About to type: '{text}'")
             # Type the text character by character
             self.keyboard.type(text)
-            print(f"⌨️ Finished typing: '{text}'")
+            logger.debug(f"Finished typing: '{text}'")
             return True
 
         except Exception as e:
-            print(f"Typing insertion failed: {e}")
+            logger.error(f"Typing insertion failed: {e}")
             return False
 
     def insert_text_with_formatting(self, text: str) -> bool:
@@ -142,7 +146,7 @@ class TextInserter:
     def test_insertion(self) -> bool:
         """Test if text insertion is working."""
         test_text = "VoiceBox test"
-        print("Testing text insertion in 3 seconds...")
+        logger.debug("Testing text insertion in 3 seconds...")
         time.sleep(3)
         return self.insert_text(test_text)
 
@@ -151,7 +155,7 @@ class TextInserter:
         try:
             return pyperclip.paste()
         except Exception as e:
-            print(f"Error reading clipboard: {e}")
+            logger.error(f"Error reading clipboard: {e}")
             return ""
 
     def get_clipboard_type_and_content(self) -> Dict[str, Any]:
@@ -228,23 +232,23 @@ class TextInserter:
     def _perform_paste_shortcut(self) -> None:
         """Send the appropriate paste shortcut for the current platform."""
         modifiers, key = self._get_paste_shortcut()
-        print(f"⌨️ Paste shortcut: {[str(m) for m in modifiers]} + {key}")
+        logger.debug(f"Paste shortcut: {[str(m) for m in modifiers]} + {key}")
 
         try:
-            print(f"⌨️ Pressing modifiers: {modifiers}")
+            logger.debug(f"Pressing modifiers: {modifiers}")
             for modifier in modifiers:
-                print(f"  ⌨️ Press {modifier}")
+                logger.debug(f"  Press {modifier}")
                 self.keyboard.press(modifier)
 
-            print(f"⌨️ Press key: {key}")
+            logger.debug(f"Press key: {key}")
             self.keyboard.press(key)
-            print(f"⌨️ Release key: {key}")
+            logger.debug(f"Release key: {key}")
             self.keyboard.release(key)
 
         finally:
-            print(f"⌨️ Releasing modifiers")
+            logger.debug(f"Releasing modifiers")
             for modifier in reversed(modifiers):
-                print(f"  ⌨️ Release {modifier}")
+                logger.debug(f"  Release {modifier}")
                 self.keyboard.release(modifier)
 
     def _get_paste_shortcut(self) -> Tuple[List[Key], str]:
@@ -254,6 +258,6 @@ class TextInserter:
         if self.platform == "windows":
             return ([Key.ctrl], "v")
         if self.platform == "linux":
-            print("🐧 Linux detected - using Ctrl+Shift+V for terminal compatibility")
+            logger.debug("Linux detected - using Ctrl+Shift+V for terminal compatibility")
             return ([Key.ctrl, Key.shift], "v")
         return ([Key.ctrl], "v")

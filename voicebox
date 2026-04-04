@@ -8,5 +8,5 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Change to script directory
 cd "$SCRIPT_DIR"
 
-# Run VoiceBox with uv (handles virtual environment)
-uv run python3 src/main.py "$@"
+# Run VoiceBox using the venv directly (uv run re-resolves and can break packages)
+.venv/bin/python3 src/main.py "$@"

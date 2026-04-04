@@ -10,7 +10,7 @@ from typing import Optional
 from src.audio.capture import AudioRecorder
 from src.transcription.local import LocalWhisperService
 from src.transcription.api import APIWhisperService
-from src.transcription.base import TranscriptionService, TranscriptionError
+from src.transcription.base import TranscriptionService, StreamingTranscriptionService, TranscriptionError
 from src.system.hotkeys import HotkeyManager
 from src.system.text_insertion import TextInserter
 from src.config.manager import ConfigManager
@@ -85,10 +85,6 @@ class VoiceBoxApp:
     def start(self) -> bool:
         """Initialize and start the application."""
         try:
-            # Check if first run
-            if self.config_manager.is_first_run():
-                self._show_first_run_info()
-
             # Initialize components
             self._initialize_audio()
             self._initialize_transcription()
@@ -160,11 +156,47 @@ class VoiceBoxApp:
                 api_key=api_key, language=language
             )
 
+        elif mode == "qwen":
+            from src.transcription.qwen_asr import QwenASRService
+            qwen_config = self.config_manager.get_qwen_config()
+            language = self.config_manager.get_transcription_language()
+            self.transcription_service = QwenASRService(
+                model_size=qwen_config["model_size"],
+                backend=qwen_config["backend"],
+                language=language,
+            )
+            # Eagerly load model so downloads happen at startup (not in hotkey thread)
+            print("Loading Qwen ASR model (may download on first run)...")
+            self.transcription_service._load_model()
+            print("Qwen ASR model loaded.")
+
         else:
             raise RuntimeError(f"Unknown transcription mode: {mode}")
 
         if not self.transcription_service.is_available():
-            raise RuntimeError(f"Transcription service ({mode}) is not available")
+            if mode == "qwen":
+                # Fall back to local Whisper if Qwen backends aren't installed yet
+                self.logger.warning(
+                    "Qwen ASR not available. Falling back to local Whisper. "
+                    "Install qwen-asr (pip install qwen-asr) then restart."
+                )
+                print(
+                    "⚠️  Qwen ASR not available, falling back to local Whisper. "
+                    "Install qwen-asr (pip install qwen-asr) then restart."
+                )
+                model_size = self.config_manager.get_local_model_size()
+                language = self.config_manager.get_transcription_language()
+                self.transcription_service = LocalWhisperService(
+                    model_size=model_size, language=language
+                )
+                if not self.transcription_service.is_available():
+                    raise RuntimeError(
+                        "Neither Qwen ASR nor local Whisper is available"
+                    )
+            else:
+                raise RuntimeError(
+                    f"Transcription service ({mode}) is not available"
+                )
 
     def _initialize_text_inserter(self) -> None:
         """Initialize text insertion component."""
@@ -223,11 +255,27 @@ class VoiceBoxApp:
                     f"Hotkey pressed but app is in {self.state.value} state"
                 )
 
+    def _is_streaming_capable(self) -> bool:
+        """Check if the current transcription service supports streaming."""
+        return (
+            isinstance(self.transcription_service, StreamingTranscriptionService)
+            and self.transcription_service.supports_streaming()
+            and self.config_manager.get_setting("qwen_streaming_enabled", True)
+        )
+
     def _start_recording(self) -> None:
         """Start audio recording."""
         try:
             self.state = AppState.RECORDING
             print("🎤 Recording...", end="", flush=True)
+
+            # Set up streaming if available
+            if self._is_streaming_capable():
+                self.logger.debug("Starting streaming transcription")
+                self.transcription_service.start_streaming()
+                self.audio_recorder.set_chunk_callback(
+                    self.transcription_service.feed_chunk
+                )
 
             self.audio_recorder.start_recording()
 
@@ -240,6 +288,10 @@ class VoiceBoxApp:
     def _stop_recording_and_transcribe(self) -> None:
         """Stop recording and start transcription in background thread."""
         try:
+            # Clear chunk callback before stopping
+            streaming = self._is_streaming_capable()
+            self.audio_recorder.clear_chunk_callback()
+
             print(" transcribing...", end="", flush=True)
             self.state = AppState.TRANSCRIBING
 
@@ -247,11 +299,17 @@ class VoiceBoxApp:
             audio_file = self.audio_recorder.stop_recording()
             self.current_audio_file = audio_file
 
-            # Start transcription in background
-            print(f"🧵 Creating transcription thread for: {audio_file}")
-            transcription_thread = threading.Thread(
-                target=self._transcribe_and_insert, args=(audio_file,)
-            )
+            # Choose streaming or normal transcription path
+            if streaming:
+                print(f"🧵 Creating streaming finish thread for: {audio_file}")
+                transcription_thread = threading.Thread(
+                    target=self._finish_streaming_and_insert, args=(audio_file,)
+                )
+            else:
+                print(f"🧵 Creating transcription thread for: {audio_file}")
+                transcription_thread = threading.Thread(
+                    target=self._transcribe_and_insert, args=(audio_file,)
+                )
             transcription_thread.daemon = True
             transcription_thread.start()
             print(f"🧵 Transcription thread started")
@@ -262,6 +320,111 @@ class VoiceBoxApp:
             time.sleep(2)
             self.state = AppState.IDLE
 
+    def _process_transcribed_text(self, transcribed_text: str) -> None:
+        """Process transcribed text: apply substitutions, detect commands, insert text."""
+        if not transcribed_text or transcribed_text == "No speech detected":
+            print(" (no speech detected)")
+            self.state = AppState.IDLE
+            return
+
+        # Apply text substitutions (this normalizes command triggers too)
+        if self.substitution_manager:
+            original_text = transcribed_text
+            transcribed_text = self.substitution_manager.apply_substitutions(
+                transcribed_text
+            )
+
+            # Show what was changed if different
+            if original_text != transcribed_text:
+                print(f" done!\nOriginal: {original_text}")
+                print(f"Fixed:    {transcribed_text}")
+            else:
+                print(f" done!\n{transcribed_text}")
+        else:
+            print(f" done!\n{transcribed_text}")
+
+        # Check if this is a command (after substitutions for normalized triggers)
+        if self.command_detector and self.command_detector.is_command(
+            transcribed_text
+        ):
+            self.state = AppState.PROCESSING_COMMAND
+            print("🎯 Command detected, processing...")
+
+            # Extract command and check for clipboard flag
+            trigger, command, has_clipboard = (
+                self.command_detector.extract_command_with_clipboard(
+                    transcribed_text
+                )
+            )
+            if command:
+                if has_clipboard:
+                    # Get clipboard content and process with context
+                    print("📋 Clipboard flag detected, reading clipboard...")
+                    clipboard_data = (
+                        self.text_inserter.get_clipboard_type_and_content()
+                    )
+                    result = self.command_processor.process_with_clipboard(
+                        command, clipboard_data
+                    )
+                else:
+                    # Process the command normally
+                    result = self.command_processor.process(command)
+
+                if result.get("success"):
+                    # INSERT THE LLM RESPONSE AT CURSOR INSTEAD OF DISPLAYING
+                    llm_response = result.get("response", "").strip()
+                    if llm_response:
+                        self.logger.debug(f"LLM Response: {llm_response}")
+
+                        # Insert the LLM response at cursor
+                        self.state = AppState.INSERTING
+                        insertion_method = (
+                            self.config_manager.get_text_insertion_method()
+                        )
+                        success = self.text_inserter.insert_text(
+                            llm_response, method=insertion_method
+                        )
+
+                        # Notify GUI of command response
+                        if self.on_transcription_complete:
+                            self.on_transcription_complete(
+                                f"[Command] {llm_response}"
+                            )
+
+                        if not success:
+                            self.logger.error("Failed to insert LLM response")
+                    else:
+                        self.logger.warning("Empty LLM response")
+                else:
+                    # Show error but don't insert anything
+                    error_msg = result.get("error", "Unknown error")
+                    self.logger.error(f"Command failed: {error_msg}")
+
+                    # Optionally display error via responder
+                    self.command_responder.display_response(result)
+            else:
+                self.logger.warning("No command text found after trigger")
+
+            # Skip normal text insertion for commands
+            return
+
+        # Normal text insertion flow
+        if self.on_transcription_complete:
+            self.logger.debug("Notifying GUI of transcription completion")
+            self.on_transcription_complete(transcribed_text)
+
+        # Insert text
+        self.state = AppState.INSERTING
+        insertion_method = self.config_manager.get_text_insertion_method()
+        success = self.text_inserter.insert_text(
+            transcribed_text, method=insertion_method
+        )
+
+        if not success:
+            self.logger.error("Failed to insert text")
+        else:
+            self.logger.info("Text inserted successfully")
+
     def _transcribe_and_insert(self, audio_file: str) -> None:
         """Transcribe audio and insert text (runs in background thread)."""
         print(f"🎙️ _transcribe_and_insert() called with audio file: {audio_file}")
@@ -271,108 +434,7 @@ class VoiceBoxApp:
             transcribed_text = self.transcription_service.transcribe(audio_file)
             print(f"🎙️ Transcription result: '{transcribed_text}'")
 
-            if not transcribed_text or transcribed_text == "No speech detected":
-                print(" (no speech detected)")
-                self.state = AppState.IDLE
-                return
-
-            # Apply text substitutions (this normalizes command triggers too)
-            if self.substitution_manager:
-                original_text = transcribed_text
-                transcribed_text = self.substitution_manager.apply_substitutions(
-                    transcribed_text
-                )
-
-                # Show what was changed if different
-                if original_text != transcribed_text:
-                    print(f" done!\nOriginal: {original_text}")
-                    print(f"Fixed:    {transcribed_text}")
-                else:
-                    print(f" done!\n{transcribed_text}")
-            else:
-                print(f" done!\n{transcribed_text}")
-
-            # Check if this is a command (after substitutions for normalized triggers)
-            if self.command_detector and self.command_detector.is_command(
-                transcribed_text
-            ):
-                self.state = AppState.PROCESSING_COMMAND
-                print("🎯 Command detected, processing...")
-
-                # Extract command and check for clipboard flag
-                trigger, command, has_clipboard = (
-                    self.command_detector.extract_command_with_clipboard(
-                        transcribed_text
-                    )
-                )
-                if command:
-                    if has_clipboard:
-                        # Get clipboard content and process with context
-                        print("📋 Clipboard flag detected, reading clipboard...")
-                        clipboard_data = (
-                            self.text_inserter.get_clipboard_type_and_content()
-                        )
-                        result = self.command_processor.process_with_clipboard(
-                            command, clipboard_data
-                        )
-                    else:
-                        # Process the command normally
-                        result = self.command_processor.process(command)
-
-                    if result.get("success"):
-                        # INSERT THE LLM RESPONSE AT CURSOR INSTEAD OF DISPLAYING
-                        llm_response = result.get("response", "").strip()
-                        if llm_response:
-                            self.logger.debug(f"LLM Response: {llm_response}")
-
-                            # Insert the LLM response at cursor
-                            self.state = AppState.INSERTING
-                            insertion_method = (
-                                self.config_manager.get_text_insertion_method()
-                            )
-                            success = self.text_inserter.insert_text(
-                                llm_response, method=insertion_method
-                            )
-
-                            # Notify GUI of command response
-                            if self.on_transcription_complete:
-                                self.on_transcription_complete(
-                                    f"[Command] {llm_response}"
-                                )
-
-                            if not success:
-                                self.logger.error("Failed to insert LLM response")
-                        else:
-                            self.logger.warning("Empty LLM response")
-                    else:
-                        # Show error but don't insert anything
-                        error_msg = result.get("error", "Unknown error")
-                        self.logger.error(f"Command failed: {error_msg}")
-
-                        # Optionally display error via responder
-                        self.command_responder.display_response(result)
-                else:
-                    self.logger.warning("No command text found after trigger")
-
-                # Skip normal text insertion for commands
-                return
-
-            # Normal text insertion flow
-            if self.on_transcription_complete:
-                self.logger.debug("Notifying GUI of transcription completion")
-                self.on_transcription_complete(transcribed_text)
-
-            # Insert text
-            self.state = AppState.INSERTING
-            insertion_method = self.config_manager.get_text_insertion_method()
-            success = self.text_inserter.insert_text(
-                transcribed_text, method=insertion_method
-            )
-
-            if not success:
-                self.logger.error("Failed to insert text")
-            else:
-                self.logger.info("Text inserted successfully")
+            self._process_transcribed_text(transcribed_text)
 
         except TranscriptionError as e:
             from src.utils.error_suggestions import get_suggestion
@@ -398,48 +460,44 @@ class VoiceBoxApp:
             self.current_audio_file = None
             self.state = AppState.IDLE
 
+    def _finish_streaming_and_insert(self, audio_file: str) -> None:
+        """Finish streaming transcription and insert text (runs in background thread)."""
+        print(f"🎙️ _finish_streaming_and_insert() called with audio file: {audio_file}")
+        try:
+            print("🎙️ Finishing streaming transcription...")
+            transcribed_text = self.transcription_service.finish_streaming()
+            print(f"🎙️ Streaming result: '{transcribed_text}'")
+
+            self._process_transcribed_text(transcribed_text)
+
+        except TranscriptionError as e:
+            from src.utils.error_suggestions import get_suggestion
+
+            suggestion = get_suggestion(e, {"operation": "transcription"})
+            self._report_error(
+                f"Streaming transcription failed: {str(e)}",
+                error_type="Transcription",
+                suggestion=suggestion,
+            )
+
+        except Exception as e:
+            from src.utils.error_suggestions import get_suggestion
+
+            suggestion = get_suggestion(e, {"operation": "transcription"})
+            self._report_error(
+                f"Unexpected error: {e}", error_type="General", suggestion=suggestion
+            )
+
+        finally:
+            # Cleanup and return to idle
+            self._cleanup_audio_file(audio_file)
+            self.current_audio_file = None
+            self.state = AppState.IDLE
+
     def _cleanup_audio_file(self, file_path: str) -> None:
         """Clean up temporary audio file."""
         if self.config_manager.get_setting("auto_cleanup_temp_files", True):
             self.audio_recorder.cleanup_temp_file(file_path)
-
-    def _show_first_run_info(self) -> None:
-        """Show first run information and setup."""
-        print("\n" + "=" * 50)
-        print("Welcome to VoiceBox!")
-        print("=" * 50)
-        print(f"Configuration file: {self.config_manager.get_config_path()}")
-        print(f"Hotkey: {self.config_manager.get_hotkey()}")
-        print(f"Transcription mode: {self.config_manager.get_transcription_mode()}")
-
-        if self.config_manager.get_transcription_mode() == "api":
-            if not self.config_manager.get_api_key():
-                print("\n⚠️  API mode selected but no API key configured!")
-                print(
-                    "Please set your OpenAI API key in the config file or switch to local mode."
-                )
-
-        # macOS-specific permissions warning
-        if self.config_manager.get_platform() == "macos":
-            print("\n" + "-" * 50)
-            print("macOS Setup Required:")
-            print("-" * 50)
-            print("VoiceBox needs Accessibility permissions to capture")
-            print("hotkeys and insert text.")
-            print("")
-            print("1. Open System Settings → Privacy & Security → Accessibility")
-            print("2. Click the '+' button and add your terminal app")
-            print("   (Terminal, iTerm2, VS Code, etc.)")
-            print("3. Restart VoiceBox after granting permission")
-            print("")
-            print("Without this, hotkeys will not be detected.")
-            print("-" * 50)
-
-        print("\nPress Ctrl+C to exit at any time")
-        print("=" * 50 + "\n")
-
-        # Mark first run as complete
-        self.config_manager.set_setting("first_run", False)
 
     def run_forever(self) -> None:
         """Run the application until interrupted."""
@@ -748,8 +806,29 @@ class VoiceBoxApp:
             return False
 
 
+def _setup_signal_handlers():
+    """Ensure Ctrl+C always exits, even during model downloads in threads."""
+    import signal
+    _first_interrupt = [True]
+
+    def _handler(signum, frame):
+        if _first_interrupt[0]:
+            _first_interrupt[0] = False
+            print("\nInterrupted. Press Ctrl+C again to force quit.")
+            # Raise KeyboardInterrupt normally for clean shutdown
+            raise KeyboardInterrupt
+        else:
+            # Second Ctrl+C: force exit immediately
+            print("\nForce quitting...")
+            os._exit(1)
+
+    signal.signal(signal.SIGINT, _handler)
+
+
 def main():
     """Main entry point."""
+    _setup_signal_handlers()
+
     # Parse --debug flag first (before other args)
     debug_mode = "--debug" in sys.argv
     if debug_mode:
@@ -811,6 +890,12 @@ def main():
         if not force_mode:
             print("Hint: Use --force to stop the existing instance and start a new one.")
         sys.exit(1)
+
+    # First-run setup wizard — runs in terminal before GUI or CLI launch
+    config_manager = ConfigManager()
+    if config_manager.is_first_run():
+        from src.ui.setup_wizard import run_setup_wizard
+        run_setup_wizard(config_manager)
 
     # CLI mode if --cli flag is present
     if cli_mode:

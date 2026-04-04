@@ -27,6 +27,8 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QTabWidget,
     QProgressBar,
+    QProgressDialog,
+    QScrollArea,
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
 from PyQt6.QtGui import QIcon, QPixmap, QAction
@@ -72,7 +74,7 @@ class VoiceBoxWorker(QThread):
 
         # Start VoiceBox
         if not self.voicebox_app.start():
-            self.error_occurred.emit("Failed to start VoiceBox")
+            self.error_occurred.emit("Failed to start VoiceBox", "Startup", "Check transcription settings")
             return
 
         self.status_changed.emit("Ready")
@@ -87,6 +89,26 @@ class VoiceBoxWorker(QThread):
         self.voicebox_app.stop()
 
 
+class ModelReloadWorker(QThread):
+    """Worker thread for reloading the transcription model after settings change."""
+
+    status_update = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)  # (success, message)
+
+    def __init__(self, voicebox_app: VoiceBoxApp):
+        super().__init__()
+        self.voicebox_app = voicebox_app
+
+    def run(self):
+        """Reinitialize the transcription service in the background."""
+        try:
+            self.status_update.emit("Initializing transcription backend...")
+            self.voicebox_app._initialize_transcription()
+            self.finished.emit(True, "Model loaded successfully")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
 class SettingsWindow(QMainWindow):
     """Settings configuration window."""
 
@@ -94,6 +116,7 @@ class SettingsWindow(QMainWindow):
         super().__init__()
         self.config_manager = config_manager
         self.voicebox_app = voicebox_app  # Reference to running VoiceBox instance
+        self.on_model_status = None  # Callback to main GUI for status updates
         self.model_fetcher = OpenRouterModels()
         self.init_ui()
         self.load_settings()
@@ -101,7 +124,8 @@ class SettingsWindow(QMainWindow):
     def init_ui(self):
         """Initialize the settings UI."""
         self.setWindowTitle("VoiceBox Settings")
-        self.setFixedSize(700, 600)
+        self.setMinimumSize(700, 600)
+        self.resize(700, 700)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -135,6 +159,10 @@ class SettingsWindow(QMainWindow):
 
     def create_general_tab(self):
         """Create the general settings tab."""
+        # Scroll area wrapper
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         general_tab = QWidget()
         layout = QVBoxLayout(general_tab)
 
@@ -143,7 +171,8 @@ class SettingsWindow(QMainWindow):
         transcription_layout = QFormLayout(transcription_group)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["local", "api"])
+        self.mode_combo.addItems(["local", "api", "qwen"])
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         transcription_layout.addRow("Mode:", self.mode_combo)
 
         self.api_key_edit = QLineEdit()
@@ -220,7 +249,31 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(audio_group)
 
-        self.tab_widget.addTab(general_tab, "General")
+        # Qwen-ASR settings
+        self.qwen_group = QGroupBox("Qwen-ASR Settings")
+        qwen_layout = QFormLayout(self.qwen_group)
+
+        self.qwen_model_combo = QComboBox()
+        self.qwen_model_combo.addItems(["0.6B", "1.7B"])
+        qwen_layout.addRow("Model Size:", self.qwen_model_combo)
+
+        self.qwen_backend_combo = QComboBox()
+        self.qwen_backend_combo.addItem("auto", "auto")
+        self.qwen_backend_combo.addItem("GPU — fastest inference", "gpu")
+        qwen_layout.addRow("Backend:", self.qwen_backend_combo)
+
+        self.qwen_streaming_check = QCheckBox("Enable streaming during recording")
+        self.qwen_streaming_check.setToolTip(
+            "Transcribe audio chunks during recording for faster results"
+        )
+        qwen_layout.addRow("Streaming:", self.qwen_streaming_check)
+
+        self.qwen_group.setVisible(False)
+        layout.addWidget(self.qwen_group)
+
+        layout.addStretch()
+        scroll.setWidget(general_tab)
+        self.tab_widget.addTab(scroll, "General")
 
     def create_command_tab(self):
         """Create the command mode settings tab."""
@@ -314,6 +367,10 @@ class SettingsWindow(QMainWindow):
 
         # Set initial enabled state
         self.on_command_mode_toggled()
+
+    def _on_mode_changed(self, mode: str):
+        """Show/hide Qwen settings based on selected transcription mode."""
+        self.qwen_group.setVisible(mode == "qwen")
 
     def on_command_mode_toggled(self):
         """Handle command mode checkbox toggle."""
@@ -505,8 +562,21 @@ class SettingsWindow(QMainWindow):
 
         self.tab_widget.addTab(subs_tab, "Substitutions")
 
+    def _snapshot_transcription_settings(self) -> dict:
+        """Capture current transcription-related settings for change detection."""
+        return {
+            "mode": self.config_manager.get_transcription_mode(),
+            "qwen_model_size": self.config_manager.get_setting("qwen_model_size"),
+            "qwen_backend": self.config_manager.get_setting("qwen_backend"),
+            "local_model_size": self.config_manager.get_local_model_size(),
+            "api_key": self.config_manager.get_api_key(),
+        }
+
     def load_settings(self):
         """Load current settings into the UI."""
+        # Snapshot for change detection on save
+        self._settings_before = self._snapshot_transcription_settings()
+
         self.mode_combo.setCurrentText(self.config_manager.get_transcription_mode())
         self.api_key_edit.setText(self.config_manager.get_api_key() or "")
         self.model_combo.setCurrentText(self.config_manager.get_local_model_size())
@@ -524,6 +594,17 @@ class SettingsWindow(QMainWindow):
         )
         self.sample_rate_spin.setValue(self.config_manager.get_audio_sample_rate())
         self.channels_spin.setValue(self.config_manager.get_audio_channels())
+
+        # Load Qwen settings
+        qwen_config = self.config_manager.get_qwen_config()
+        self.qwen_model_combo.setCurrentText(qwen_config["model_size"])
+        # Set backend combo by data value
+        for i in range(self.qwen_backend_combo.count()):
+            if self.qwen_backend_combo.itemData(i) == qwen_config["backend"]:
+                self.qwen_backend_combo.setCurrentIndex(i)
+                break
+        self.qwen_streaming_check.setChecked(qwen_config["streaming_enabled"])
+        self._on_mode_changed(self.mode_combo.currentText())
 
         # Load command mode settings
         cmd_config = self.config_manager.get_command_mode_config()
@@ -569,6 +650,17 @@ class SettingsWindow(QMainWindow):
         )
         self.config_manager.set_setting("audio_channels", self.channels_spin.value())
 
+        # Save Qwen settings
+        self.config_manager.set_setting(
+            "qwen_model_size", self.qwen_model_combo.currentText()
+        )
+        self.config_manager.set_setting(
+            "qwen_backend", self.qwen_backend_combo.currentData()
+        )
+        self.config_manager.set_setting(
+            "qwen_streaming_enabled", self.qwen_streaming_check.isChecked()
+        )
+
         # Save command mode settings
         triggers_text = self.triggers_edit.text().strip()
         triggers = (
@@ -591,11 +683,75 @@ class SettingsWindow(QMainWindow):
         # Save substitutions
         self.save_substitutions()
 
-        # Reload all settings in the running VoiceBox instance
-        if self.voicebox_app and hasattr(self.voicebox_app, "reload_config"):
-            self.voicebox_app.reload_config()
+        # Check if transcription settings changed (needs model reload)
+        settings_after = self._snapshot_transcription_settings()
+        model_changed = settings_after != self._settings_before
 
-        self.close()
+        if model_changed and self.voicebox_app:
+            # Reload non-transcription settings first (hotkeys, substitutions, etc.)
+            self.voicebox_app.config_manager._load_config()
+            if self.voicebox_app.substitution_manager:
+                self.voicebox_app.substitution_manager.load_substitutions()
+
+            # Show progress dialog and reload model in background
+            self._show_model_reload_dialog()
+        else:
+            # No model change — quick reload
+            if self.voicebox_app and hasattr(self.voicebox_app, "reload_config"):
+                self.voicebox_app.reload_config()
+            self.close()
+
+    def _show_model_reload_dialog(self):
+        """Show a progress dialog while the transcription model reloads."""
+        self.save_button.setEnabled(False)
+        self.cancel_button.setEnabled(False)
+
+        self._progress_dialog = QProgressDialog(
+            "Loading transcription model...", None, 0, 0, self
+        )
+        self._progress_dialog.setWindowTitle("VoiceBox")
+        self._progress_dialog.setMinimumWidth(350)
+        self._progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self._progress_dialog.setCancelButton(None)  # No cancel — download must complete
+        self._progress_dialog.show()
+
+        self._reload_worker = ModelReloadWorker(self.voicebox_app)
+        self._reload_worker.status_update.connect(self._on_reload_status)
+        self._reload_worker.finished.connect(self._on_reload_finished)
+        self._reload_worker.start()
+
+    def _on_reload_status(self, message: str):
+        """Update progress dialog text and main window status."""
+        if hasattr(self, "_progress_dialog") and self._progress_dialog:
+            self._progress_dialog.setLabelText(message)
+        if self.on_model_status:
+            self.on_model_status(message)
+
+    def _on_reload_finished(self, success: bool, message: str):
+        """Handle model reload completion."""
+        if hasattr(self, "_progress_dialog") and self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
+
+        self.save_button.setEnabled(True)
+        self.cancel_button.setEnabled(True)
+
+        if success:
+            if self.on_model_status:
+                self.on_model_status("Ready")
+            QMessageBox.information(self, "VoiceBox", "Model loaded successfully.")
+            self.close()
+        else:
+            if self.on_model_status:
+                self.on_model_status(f"Error: {message}")
+            QMessageBox.critical(
+                self, "Model Load Failed",
+                f"Failed to load model:\n\n{message}\n\n"
+                "Previous model will continue to be used. "
+                "Check your settings and try again.",
+            )
+            # Reload previous snapshot so user can fix settings
+            self._settings_before = self._snapshot_transcription_settings()
 
     def load_substitutions_table(self):
         """Load substitutions into the table."""
@@ -852,15 +1008,9 @@ class VoiceBoxGUI(QMainWindow):
         self.activateWindow()
 
     def closeEvent(self, event):
-        """Handle window close event - minimize to tray instead."""
-        event.ignore()
-        self.hide()
-        self.tray_icon.showMessage(
-            "VoiceBox",
-            "Application was minimized to tray",
-            QSystemTrayIcon.MessageIcon.Information,
-            2000,
-        )
+        """Handle window close event - quit the application."""
+        self.quit_application()
+        event.accept()
 
     def show_settings(self):
         """Show settings window."""
@@ -868,7 +1018,18 @@ class VoiceBoxGUI(QMainWindow):
             self.settings_window = SettingsWindow(
                 self.config_manager, self.voicebox_app
             )
+            self.settings_window.on_model_status = self._on_model_status
 
+    def _on_model_status(self, status: str):
+        """Update main window status when model is loading/loaded."""
+        self.update_status(status)
+        if status.startswith("Error"):
+            self.tray_icon.showMessage(
+                "VoiceBox", status,
+                QSystemTrayIcon.MessageIcon.Critical, 5000,
+            )
+
+        self.settings_window.load_settings()  # Refresh values and snapshot
         self.settings_window.show()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
@@ -968,7 +1129,7 @@ def run_gui():
         logger.info("GUI running in debug mode")
 
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)  # Keep running when window is closed
+    app.setQuitOnLastWindowClosed(True)
 
     # Set application properties
     app.setApplicationName("VoiceBox")
