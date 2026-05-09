@@ -69,6 +69,18 @@ class StreamingTranscriptionService(TranscriptionService):
         """
         pass
 
+    def get_partial_result(self, session_id: str = None) -> 'Optional[str]':
+        """
+        Get partial transcription result from an active streaming session.
+
+        Args:
+            session_id: Optional session identifier for multi-session support
+
+        Returns:
+            Partial text if available, None otherwise
+        """
+        return None
+
 
 class TranscriptionError(Exception):
     """Exception raised when transcription fails."""

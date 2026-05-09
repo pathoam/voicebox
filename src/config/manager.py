@@ -25,6 +25,13 @@ class ConfigManager:
         "qwen_model_size": "0.6B",          # "0.6B" or "1.7B"
         "qwen_backend": "auto",             # "auto" or "gpu"
         "qwen_streaming_enabled": True,     # Enable streaming during recording
+        "vllm_kv_cache_mb": 256,             # vLLM KV cache size in MB (256 for personal, 2048+ for server)
+        "api_port": 9876,                    # Local API server port
+        "api_max_streams": 8,                # Max concurrent WebSocket streams
+        "training_data_enabled": True,       # Collect training data (audio + transcripts)
+        "training_data_max_mb": 2048,        # Max storage for training data
+        "number_normalization_enabled": True, # Convert spoken numbers to digits
+        "correction_hotkey": "ctrl+alt+space",  # Hotkey for correction overlay
         "command_mode": {
             "enabled": False,
             "triggers": ["voicebox", "assistant"],
@@ -236,6 +243,7 @@ class ConfigManager:
             "model_size": self.config.get("qwen_model_size", "0.6B"),
             "backend": self.config.get("qwen_backend", "auto"),
             "streaming_enabled": self.config.get("qwen_streaming_enabled", True),
+            "kv_cache_mb": self.config.get("vllm_kv_cache_mb", 256),
         }
 
     def get_command_mode_config(self) -> dict:
