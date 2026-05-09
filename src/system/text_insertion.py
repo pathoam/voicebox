@@ -143,6 +143,36 @@ class TextInserter:
 
         return text
 
+    def select_and_replace(self, old_char_count: int, new_text: str) -> bool:
+        """
+        Select the last N characters and replace with new text.
+        Used for correction flow: selects old insertion, pastes corrected text.
+
+        Args:
+            old_char_count: Number of characters to select backwards
+            new_text: Replacement text
+
+        Returns:
+            True if successful
+        """
+        try:
+            # Select old text by pressing Shift+Left N times
+            for _ in range(old_char_count):
+                self.keyboard.press(Key.shift)
+                self.keyboard.press(Key.left)
+                self.keyboard.release(Key.left)
+                self.keyboard.release(Key.shift)
+                time.sleep(0.005)  # Small delay for reliability
+
+            time.sleep(0.05)
+
+            # Now paste the replacement (overwrites selection)
+            return self._insert_via_clipboard(new_text)
+
+        except Exception as e:
+            logger.error(f"Select and replace failed: {e}")
+            return False
+
     def test_insertion(self) -> bool:
         """Test if text insertion is working."""
         test_text = "VoiceBox test"

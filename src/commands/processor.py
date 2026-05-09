@@ -11,14 +11,14 @@ from src.utils.logging import get_logger
 
 class CommandProcessor:
     """Processes commands using built-in handlers or LLM."""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  openrouter_api_key: Optional[str] = None,
                  local_llm_endpoint: Optional[str] = None,
                  model: str = "meta-llama/llama-3.2-3b-instruct:free"):
         """
         Initialize command processor.
-        
+
         Args:
             openrouter_api_key: API key for OpenRouter
             local_llm_endpoint: Endpoint for local LLM (e.g., vLLM, Ollama)
@@ -32,12 +32,22 @@ class CommandProcessor:
 
         # Track models that don't support system messages
         self.no_system_models = set()
-        
+
+        # External references set by VoiceBoxApp for vocabulary/correction commands
+        self.vocabulary_manager = None
+        self.text_inserter = None
+        self.voicebox_app = None
+
         # Built-in command handlers
         self.built_in_commands = {
             "time": self._handle_time,
             "date": self._handle_date,
             "help": self._handle_help,
+            "add context": self._handle_add_context,
+            "remove context": self._handle_remove_context,
+            "clear context": self._handle_clear_context,
+            "show context": self._handle_show_context,
+            "fix": self._handle_fix,
         }
         
     def process(self, command: str) -> Dict[str, Any]:
@@ -470,14 +480,113 @@ class CommandProcessor:
         help_text = """Available commands:
 • time - Get current time
 • date - Get current date
+• add context - Add selected text to vocabulary (select text first)
+• remove context - Remove selected text from vocabulary
+• clear context - Clear all vocabulary terms
+• show context - Show current vocabulary terms
+• fix - Correct last transcription
 • Any other request - Processed by AI assistant
 
 Examples:
 "voicebox, what's the weather?"
-"voicebox, create a shell script to delete all PNGs"
-"voicebox, explain quantum computing"
+"voicebox, add context" (with text selected)
+"voicebox, show context"
 """
         return {"success": True, "response": help_text}
+
+    def _handle_add_context(self, command: str) -> Dict[str, Any]:
+        """Add selected text to vocabulary via clipboard."""
+        from src.utils.notify import notify
+
+        if not self.vocabulary_manager:
+            return {"success": False, "error": "Vocabulary manager not available"}
+        try:
+            import time as _time
+            # Simulate Ctrl+C to copy selected text
+            if self.text_inserter:
+                from pynput.keyboard import Key, Controller
+                kb = Controller()
+                kb.press(Key.ctrl)
+                kb.press('c')
+                kb.release('c')
+                kb.release(Key.ctrl)
+                _time.sleep(0.2)
+
+            import pyperclip
+            term = pyperclip.paste().strip()
+            if not term:
+                notify("VoiceBox", "No text selected to add")
+                return {"success": True, "response": ""}
+
+            if self.vocabulary_manager.add_term(term):
+                notify("VoiceBox", f"Added '{term}' to vocabulary")
+            else:
+                notify("VoiceBox", f"'{term}' is already in vocabulary")
+            return {"success": True, "response": ""}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to add context: {e}"}
+
+    def _handle_remove_context(self, command: str) -> Dict[str, Any]:
+        """Remove selected text from vocabulary via clipboard."""
+        from src.utils.notify import notify
+
+        if not self.vocabulary_manager:
+            return {"success": False, "error": "Vocabulary manager not available"}
+        try:
+            import time as _time
+            if self.text_inserter:
+                from pynput.keyboard import Key, Controller
+                kb = Controller()
+                kb.press(Key.ctrl)
+                kb.press('c')
+                kb.release('c')
+                kb.release(Key.ctrl)
+                _time.sleep(0.2)
+
+            import pyperclip
+            term = pyperclip.paste().strip()
+            if not term:
+                notify("VoiceBox", "No text selected to remove")
+                return {"success": True, "response": ""}
+
+            if self.vocabulary_manager.remove_term(term):
+                notify("VoiceBox", f"Removed '{term}' from vocabulary")
+            else:
+                notify("VoiceBox", f"'{term}' not found in vocabulary")
+            return {"success": True, "response": ""}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to remove context: {e}"}
+
+    def _handle_clear_context(self, command: str) -> Dict[str, Any]:
+        """Clear all vocabulary terms."""
+        from src.utils.notify import notify
+
+        if not self.vocabulary_manager:
+            return {"success": False, "error": "Vocabulary manager not available"}
+        self.vocabulary_manager.clear()
+        notify("VoiceBox", "Vocabulary cleared")
+        return {"success": True, "response": ""}
+
+    def _handle_show_context(self, command: str) -> Dict[str, Any]:
+        """Show current vocabulary terms."""
+        from src.utils.notify import notify
+
+        if not self.vocabulary_manager:
+            return {"success": False, "error": "Vocabulary manager not available"}
+        terms = self.vocabulary_manager.get_terms()
+        if terms:
+            terms_str = ", ".join(terms)
+            notify("VoiceBox", f"Vocabulary ({len(terms)} terms): {terms_str}")
+        else:
+            notify("VoiceBox", "Vocabulary is empty")
+        return {"success": True, "response": ""}
+
+    def _handle_fix(self, command: str) -> Dict[str, Any]:
+        """Trigger correction flow for last transcription."""
+        if self.voicebox_app and hasattr(self.voicebox_app, '_on_correction_hotkey'):
+            self.voicebox_app._on_correction_hotkey()
+            return {"success": True, "response": ""}
+        return {"success": True, "response": "No recent transcription to correct"}
         
     def set_openrouter_key(self, api_key: str):
         """Update OpenRouter API key."""

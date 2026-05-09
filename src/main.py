@@ -14,7 +14,9 @@ from src.transcription.base import TranscriptionService, StreamingTranscriptionS
 from src.system.hotkeys import HotkeyManager
 from src.system.text_insertion import TextInserter
 from src.config.manager import ConfigManager
-from src.text.substitutions import SubstitutionManager
+from src.text.corrections import CorrectionPipeline
+from src.text.vocabulary import VocabularyManager
+from src.data.collector import TrainingDataCollector
 from src.commands.detector import CommandDetector
 from src.commands.processor import CommandProcessor
 from src.commands.responder import CommandResponder
@@ -49,7 +51,9 @@ class VoiceBoxApp:
         self.transcription_service: Optional[TranscriptionService] = None
         self.hotkey_manager: Optional[HotkeyManager] = None
         self.text_inserter: Optional[TextInserter] = None
-        self.substitution_manager: Optional[SubstitutionManager] = None
+        self.correction_pipeline: Optional[CorrectionPipeline] = None
+        self.vocabulary_manager: Optional[VocabularyManager] = None
+        self.training_data_collector: Optional[TrainingDataCollector] = None
 
         # Command mode components
         self.command_detector: Optional[CommandDetector] = None
@@ -60,6 +64,18 @@ class VoiceBoxApp:
         self.current_audio_file: Optional[str] = None
         self._running = False
         self._state_lock = threading.Lock()
+
+        # Last insertion tracking for correction flow
+        self._last_insertion: Optional[dict] = None  # {text, char_count, audio_file, data_id}
+
+        # Recording duration safety
+        self._recording_start_time: Optional[float] = None
+        self._max_recording_sec: Optional[float] = None
+        self._warned_recording_limit = False
+        self._auto_stopping = False
+
+        # GUI mode flag
+        self._use_gui = False
 
         # Callbacks for GUI integration
         self.on_transcription_complete = None
@@ -87,9 +103,11 @@ class VoiceBoxApp:
         try:
             # Initialize components
             self._initialize_audio()
+            self._initialize_vocabulary()
             self._initialize_transcription()
             self._initialize_text_inserter()
-            self._initialize_substitutions()
+            self._initialize_corrections()
+            self._initialize_training_data()
             self._initialize_commands()
             self._initialize_hotkeys()
 
@@ -160,10 +178,13 @@ class VoiceBoxApp:
             from src.transcription.qwen_asr import QwenASRService
             qwen_config = self.config_manager.get_qwen_config()
             language = self.config_manager.get_transcription_language()
+            context = self.vocabulary_manager.get_context_string() if self.vocabulary_manager else None
             self.transcription_service = QwenASRService(
                 model_size=qwen_config["model_size"],
                 backend=qwen_config["backend"],
                 language=language,
+                kv_cache_mb=self.config_manager.get_setting("vllm_kv_cache_mb", 256),
+                context=context,
             )
             # Eagerly load model so downloads happen at startup (not in hotkey thread)
             print("Loading Qwen ASR model (may download on first run)...")
@@ -203,10 +224,33 @@ class VoiceBoxApp:
         platform_name = self.config_manager.get_platform()
         self.text_inserter = TextInserter(platform_name=platform_name)
 
-    def _initialize_substitutions(self) -> None:
-        """Initialize text substitution manager."""
+    def _initialize_vocabulary(self) -> None:
+        """Initialize vocabulary manager for ASR context biasing."""
         config_dir = self.config_manager.config_dir
-        self.substitution_manager = SubstitutionManager(config_dir)
+        # Include command trigger words as default vocabulary terms
+        triggers = self.config_manager.get_command_triggers() if self.config_manager.is_command_mode_enabled() else []
+        self.vocabulary_manager = VocabularyManager(config_dir, default_terms=triggers)
+
+        # Register callback to push context changes to ASR service
+        def _on_vocabulary_change(context_string):
+            if self.transcription_service and hasattr(self.transcription_service, 'set_context'):
+                self.transcription_service.set_context(context_string)
+                self.logger.info(f"ASR context updated: {context_string}")
+
+        self.vocabulary_manager.on_change(_on_vocabulary_change)
+
+    def _initialize_corrections(self) -> None:
+        """Initialize correction pipeline."""
+        config_dir = self.config_manager.config_dir
+        number_norm = self.config_manager.get_setting("number_normalization_enabled", True)
+        self.correction_pipeline = CorrectionPipeline(config_dir, number_normalization_enabled=number_norm)
+
+    def _initialize_training_data(self) -> None:
+        """Initialize training data collector."""
+        config_dir = self.config_manager.config_dir
+        enabled = self.config_manager.get_setting("training_data_enabled", True)
+        max_mb = self.config_manager.get_setting("training_data_max_mb", 2048)
+        self.training_data_collector = TrainingDataCollector(config_dir, max_mb=max_mb, enabled=enabled)
 
     def _initialize_commands(self) -> None:
         """Initialize command mode components if enabled."""
@@ -223,6 +267,11 @@ class VoiceBoxApp:
                 model=cmd_config.get("openrouter_model"),
             )
 
+            # Wire vocabulary and correction references into command processor
+            self.command_processor.vocabulary_manager = self.vocabulary_manager
+            self.command_processor.text_inserter = self.text_inserter
+            self.command_processor.voicebox_app = self
+
             # Initialize responder
             response_method = cmd_config.get("response_method", "notification")
             self.command_responder = CommandResponder(
@@ -234,6 +283,12 @@ class VoiceBoxApp:
         """Initialize hotkey management."""
         hotkey = self.config_manager.get_hotkey()
         self.hotkey_manager = HotkeyManager(callback=self._on_hotkey_pressed)
+
+        # Register correction hotkey
+        correction_hotkey = self.config_manager.get_setting("correction_hotkey", "ctrl+alt+space")
+        if correction_hotkey:
+            self.hotkey_manager.register_hotkey(correction_hotkey, self._on_correction_hotkey)
+
         self.hotkey_manager.set_hotkey(hotkey)
 
     def _on_hotkey_pressed(self) -> None:
@@ -267,15 +322,37 @@ class VoiceBoxApp:
         """Start audio recording."""
         try:
             self.state = AppState.RECORDING
+            self._recording_start_time = time.time()
+            self._warned_recording_limit = False
+            self._auto_stopping = False
             print("🎤 Recording...", end="", flush=True)
+
+            # Compute max recording duration from transcription service
+            self._max_recording_sec = None
+            if hasattr(self.transcription_service, 'get_max_recording_seconds'):
+                self._max_recording_sec = self.transcription_service.get_max_recording_seconds()
+                if self._max_recording_sec:
+                    self.logger.info(f"Max safe recording: {self._max_recording_sec:.0f}s")
 
             # Set up streaming if available
             if self._is_streaming_capable():
                 self.logger.debug("Starting streaming transcription")
                 self.transcription_service.start_streaming()
-                self.audio_recorder.set_chunk_callback(
-                    self.transcription_service.feed_chunk
-                )
+
+                # Wrap the feed_chunk callback with duration checking
+                original_feed = self.transcription_service.feed_chunk
+
+                def _checked_feed(chunk):
+                    original_feed(chunk)
+                    self._check_recording_duration()
+
+                self.audio_recorder.set_chunk_callback(_checked_feed)
+            else:
+                # Even without streaming, check duration via a no-op wrapper
+                if self._max_recording_sec:
+                    def _duration_only_callback(chunk):
+                        self._check_recording_duration()
+                    self.audio_recorder.set_chunk_callback(_duration_only_callback)
 
             self.audio_recorder.start_recording()
 
@@ -284,6 +361,47 @@ class VoiceBoxApp:
             self.state = AppState.ERROR
             time.sleep(2)  # Brief error state
             self.state = AppState.IDLE
+
+    def _check_recording_duration(self) -> None:
+        """Check elapsed recording time and warn/auto-stop if near the limit."""
+        if not self._max_recording_sec or not self._recording_start_time:
+            return
+        elapsed = time.time() - self._recording_start_time
+
+        # At 95% of max → auto-stop
+        if elapsed >= self._max_recording_sec * 0.95:
+            if not self._auto_stopping:
+                self._auto_stopping = True
+                self.logger.warning(f"Recording auto-stopped at {elapsed:.0f}s (limit {self._max_recording_sec:.0f}s)")
+                self._auto_stop_recording()
+            return
+
+        # At 90% of max → warning toast (once)
+        if not self._warned_recording_limit and elapsed >= self._max_recording_sec * 0.90:
+            self._warned_recording_limit = True
+            remaining = int(self._max_recording_sec - elapsed)
+            self.logger.info(f"Recording duration warning at {elapsed:.0f}s, ~{remaining}s remaining")
+            try:
+                from src.utils.notify import notify
+                notify("VoiceBox", f"~{remaining} seconds of recording remaining")
+            except Exception:
+                pass
+
+    def _auto_stop_recording(self) -> None:
+        """Auto-stop recording from the chunk callback thread."""
+        # Run stop in a separate thread to avoid blocking the audio callback
+        t = threading.Thread(target=self._auto_stop_recording_sync, daemon=True)
+        t.start()
+
+    def _auto_stop_recording_sync(self) -> None:
+        """Perform the actual stop+transcribe, called from a helper thread."""
+        try:
+            with self._state_lock:
+                if self.state != AppState.RECORDING:
+                    return
+                self._stop_recording_and_transcribe()
+        except Exception as e:
+            self.logger.error(f"Auto-stop failed: {e}")
 
     def _stop_recording_and_transcribe(self) -> None:
         """Stop recording and start transcription in background thread."""
@@ -320,19 +438,25 @@ class VoiceBoxApp:
             time.sleep(2)
             self.state = AppState.IDLE
 
-    def _process_transcribed_text(self, transcribed_text: str) -> None:
-        """Process transcribed text: apply substitutions, detect commands, insert text."""
+    def _process_transcribed_text(self, transcribed_text: str, audio_file: str = None) -> None:
+        """Process transcribed text: apply corrections, detect commands, insert text."""
         if not transcribed_text or transcribed_text == "No speech detected":
             print(" (no speech detected)")
             self.state = AppState.IDLE
             return
 
-        # Apply text substitutions (this normalizes command triggers too)
-        if self.substitution_manager:
+        raw_text = transcribed_text
+        corrections_applied = []
+
+        # Apply correction pipeline (replaces old substitution manager)
+        if self.correction_pipeline:
             original_text = transcribed_text
-            transcribed_text = self.substitution_manager.apply_substitutions(
-                transcribed_text
-            )
+            result = self.correction_pipeline.apply(transcribed_text)
+            transcribed_text = result.text
+            corrections_applied = [
+                {"stage": c.stage, "original": c.original, "corrected": c.corrected}
+                for c in result.corrections
+            ]
 
             # Show what was changed if different
             if original_text != transcribed_text:
@@ -343,10 +467,12 @@ class VoiceBoxApp:
         else:
             print(f" done!\n{transcribed_text}")
 
-        # Check if this is a command (after substitutions for normalized triggers)
+        # Check if this is a command (after corrections for normalized triggers)
+        is_command = False
         if self.command_detector and self.command_detector.is_command(
             transcribed_text
         ):
+            is_command = True
             self.state = AppState.PROCESSING_COMMAND
             print("🎯 Command detected, processing...")
 
@@ -405,6 +531,16 @@ class VoiceBoxApp:
             else:
                 self.logger.warning("No command text found after trigger")
 
+            # Save training data for commands too
+            if self.training_data_collector and audio_file:
+                self.training_data_collector.save_sample(
+                    audio_file=audio_file,
+                    raw_transcript=raw_text,
+                    auto_corrected=transcribed_text,
+                    corrections_applied=corrections_applied,
+                    was_command=True,
+                )
+
             # Skip normal text insertion for commands
             return
 
@@ -425,6 +561,25 @@ class VoiceBoxApp:
         else:
             self.logger.info("Text inserted successfully")
 
+            # Save training data
+            data_id = None
+            if self.training_data_collector and audio_file:
+                data_id = self.training_data_collector.save_sample(
+                    audio_file=audio_file,
+                    raw_transcript=raw_text,
+                    auto_corrected=transcribed_text,
+                    corrections_applied=corrections_applied,
+                    was_command=False,
+                )
+
+            # Track last insertion for correction flow
+            self._last_insertion = {
+                "text": transcribed_text,
+                "char_count": len(transcribed_text),
+                "audio_file": audio_file,
+                "data_id": data_id,
+            }
+
     def _transcribe_and_insert(self, audio_file: str) -> None:
         """Transcribe audio and insert text (runs in background thread)."""
         print(f"🎙️ _transcribe_and_insert() called with audio file: {audio_file}")
@@ -434,7 +589,7 @@ class VoiceBoxApp:
             transcribed_text = self.transcription_service.transcribe(audio_file)
             print(f"🎙️ Transcription result: '{transcribed_text}'")
 
-            self._process_transcribed_text(transcribed_text)
+            self._process_transcribed_text(transcribed_text, audio_file=audio_file)
 
         except TranscriptionError as e:
             from src.utils.error_suggestions import get_suggestion
@@ -468,7 +623,7 @@ class VoiceBoxApp:
             transcribed_text = self.transcription_service.finish_streaming()
             print(f"🎙️ Streaming result: '{transcribed_text}'")
 
-            self._process_transcribed_text(transcribed_text)
+            self._process_transcribed_text(transcribed_text, audio_file=audio_file)
 
         except TranscriptionError as e:
             from src.utils.error_suggestions import get_suggestion
@@ -494,8 +649,55 @@ class VoiceBoxApp:
             self.current_audio_file = None
             self.state = AppState.IDLE
 
+    def _on_correction_hotkey(self) -> None:
+        """Handle correction hotkey press — open correction overlay for last transcription."""
+        if not self._last_insertion:
+            self.logger.debug("No recent transcription to correct")
+            return
+
+        last = self._last_insertion
+        original_text = last["text"]
+
+        # Show correction UI
+        from src.ui.review import prompt_correction
+        corrected = prompt_correction(original_text, use_gui=self._use_gui)
+
+        if corrected is None or corrected == original_text:
+            return
+
+        # Select and replace old text in target app
+        if self.text_inserter:
+            success = self.text_inserter.select_and_replace(
+                last["char_count"], corrected
+            )
+            if success:
+                self.logger.info(f"Correction applied: '{original_text}' -> '{corrected}'")
+
+                # Update training data
+                if self.training_data_collector and last.get("data_id"):
+                    self.training_data_collector.update_sample(
+                        last["data_id"], corrected
+                    )
+
+                # Check for new vocabulary terms
+                if self.vocabulary_manager:
+                    existing_terms = {t.lower() for t in self.vocabulary_manager.get_terms()}
+                    corrected_words = set(corrected.split())
+                    original_words = set(original_text.split())
+                    new_words = corrected_words - original_words
+                    for word in new_words:
+                        if len(word) > 2 and word.lower() not in existing_terms:
+                            # Don't auto-add common words, only unusual ones
+                            if word[0].isupper() or any(c.isdigit() for c in word):
+                                self.vocabulary_manager.add_term(word)
+                                self.logger.info(f"Auto-added '{word}' to vocabulary")
+
+        # Clear last insertion
+        self._last_insertion = None
+
     def _cleanup_audio_file(self, file_path: str) -> None:
         """Clean up temporary audio file."""
+        # Don't clean up if training data collector already copied it
         if self.config_manager.get_setting("auto_cleanup_temp_files", True):
             self.audio_recorder.cleanup_temp_file(file_path)
 
@@ -633,9 +835,13 @@ class VoiceBoxApp:
         # Reload config manager
         self.config_manager._load_config()
 
-        # Reload substitutions
-        if self.substitution_manager:
-            self.substitution_manager.load_substitutions()
+        # Reload corrections
+        if self.correction_pipeline:
+            self.correction_pipeline.reload()
+
+        # Reload vocabulary
+        if self.vocabulary_manager:
+            self.vocabulary_manager.load()
 
         # Reload hotkey if it changed
         new_hotkey = self.config_manager.get_hotkey()
@@ -697,6 +903,11 @@ class VoiceBoxApp:
         # Reload command mode settings
         if self.config_manager.is_command_mode_enabled():
             cmd_config = self.config_manager.get_command_mode_config()
+            triggers = cmd_config.get("triggers", ["voicebox"])
+
+            # Keep vocabulary default terms in sync with triggers
+            if self.vocabulary_manager:
+                self.vocabulary_manager.set_default_terms(triggers)
 
             # Initialize or update command components
             if not self.command_detector:
@@ -704,7 +915,6 @@ class VoiceBoxApp:
                 print("✅ Command mode enabled!")
             else:
                 # Update existing components
-                triggers = cmd_config.get("triggers", ["voicebox"])
                 self.command_detector.triggers = triggers
                 self.command_detector._build_trigger_pattern()
 
@@ -731,6 +941,9 @@ class VoiceBoxApp:
                 self.command_detector = None
                 self.command_processor = None
                 self.command_responder = None
+            # Clear trigger-based default terms
+            if self.vocabulary_manager:
+                self.vocabulary_manager.set_default_terms([])
                 print("✅ Command mode disabled")
 
         print("🔄 Configuration reloaded!")
@@ -825,6 +1038,78 @@ def _setup_signal_handlers():
     signal.signal(signal.SIGINT, _handler)
 
 
+def _init_qwen_service(config_manager):
+    """Initialize a QwenASRService from config for the API server."""
+    from src.transcription.qwen_asr import QwenASRService
+    from src.text.vocabulary import VocabularyManager
+
+    qwen_config = config_manager.get_qwen_config()
+    language = config_manager.get_transcription_language()
+
+    # Load vocabulary context if available
+    vocab = VocabularyManager(config_manager.config_dir)
+    context = vocab.get_context_string()
+
+    service = QwenASRService(
+        model_size=qwen_config["model_size"],
+        backend=qwen_config["backend"],
+        language=language,
+        kv_cache_mb=config_manager.get_setting("vllm_kv_cache_mb", 256),
+        context=context,
+    )
+    print("Loading Qwen ASR model (may download on first run)...")
+    service._load_model()
+    print("Qwen ASR model loaded.")
+    return service
+
+
+def _start_api_server_only(config_manager):
+    """Run the API server in the foreground (blocking). No GUI/hotkeys."""
+    from src.api.server import configure, run_server
+
+    service = _init_qwen_service(config_manager)
+    port = config_manager.get_setting("api_port", 9876)
+    max_streams = config_manager.get_setting("api_max_streams", 8)
+    configure(service, max_streams=max_streams)
+    print(f"Starting API server on http://127.0.0.1:{port}")
+    run_server(host="127.0.0.1", port=port)
+
+
+def _start_api_daemon(app, config_manager):
+    """Start the API server as a daemon thread, sharing the app's transcription service."""
+    from src.api.server import configure, start_server
+
+    # The app must have initialized transcription already via start()
+    # We hook into it after the app starts — but start() is called inside run_forever.
+    # Instead, use the app's service after start() by wrapping.
+    port = config_manager.get_setting("api_port", 9876)
+    max_streams = config_manager.get_setting("api_max_streams", 8)
+
+    original_start = app.start
+
+    def _patched_start():
+        result = original_start()
+        if result and app.transcription_service:
+            configure(app.transcription_service, max_streams=max_streams)
+            start_server(host="127.0.0.1", port=port, daemon=True)
+            print(f"API server running on http://127.0.0.1:{port}")
+        return result
+
+    app.start = _patched_start
+
+
+def _start_api_headless_for_gui(config_manager):
+    """Start API server daemon before the GUI launches (standalone service)."""
+    from src.api.server import configure, start_server
+
+    service = _init_qwen_service(config_manager)
+    port = config_manager.get_setting("api_port", 9876)
+    max_streams = config_manager.get_setting("api_max_streams", 8)
+    configure(service, max_streams=max_streams)
+    start_server(host="127.0.0.1", port=port, daemon=True)
+    print(f"API server running on http://127.0.0.1:{port}")
+
+
 def main():
     """Main entry point."""
     _setup_signal_handlers()
@@ -845,6 +1130,8 @@ def main():
     # Handle command line arguments
     cli_mode = "--cli" in sys.argv
     force_mode = "--force" in sys.argv
+    serve_mode = "--serve" in sys.argv
+    serve_only_mode = "--serve-only" in sys.argv
 
     if len(sys.argv) > 1:
         if sys.argv[1] == "--test":
@@ -868,12 +1155,14 @@ def main():
             success = app.test_hotkey_capture()
             sys.exit(0 if success else 1)
         elif sys.argv[1] == "--help":
-            print("Usage: voicebox [--cli|--test|--test-hotkey|--config|--help|--debug|--force]")
+            print("Usage: voicebox [--cli|--test|--test-hotkey|--config|--help|--debug|--force|--serve|--serve-only]")
             print("")
             print("VoiceBox runs in GUI mode by default (with system tray icon).")
             print("")
             print("Options:")
             print("  --cli         : Run in command-line mode (no GUI)")
+            print("  --serve       : GUI mode + local API server on configured port")
+            print("  --serve-only  : Headless API server only (no GUI/hotkeys)")
             print("  --test        : Test initialization and exit")
             print("  --test-hotkey : Test hotkey capture (diagnose permission issues)")
             print("                  Optionally specify hotkey: --test-hotkey f11")
@@ -897,13 +1186,24 @@ def main():
         from src.ui.setup_wizard import run_setup_wizard
         run_setup_wizard(config_manager)
 
+    # --serve-only: headless API server, no GUI or hotkeys
+    if serve_only_mode:
+        logger.info("VoiceBox - Headless API server mode")
+        _start_api_server_only(config_manager)
+        return
+
     # CLI mode if --cli flag is present
     if cli_mode:
         logger.info("VoiceBox - Voice-to-Text Transcription Tool (CLI mode)")
         app = VoiceBoxApp()
+        if serve_mode:
+            _start_api_daemon(app, config_manager)
         app.run_forever()
     else:
         # GUI mode is the default
+        if serve_mode:
+            # Start API server in background before launching GUI
+            _start_api_headless_for_gui(config_manager)
         from src.ui.gui import run_gui
         sys.exit(run_gui())
 
