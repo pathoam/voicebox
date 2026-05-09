@@ -1,5 +1,7 @@
+import re
+import subprocess
 from typing import Callable, Optional, Union
-from pynput import keyboard, mouse
+from pynput import keyboard
 import threading
 from src.utils.logging import get_logger
 
@@ -17,10 +19,12 @@ class HotkeyManager:
         self.callback = callback
         self.current_hotkey: Optional[str] = None
         self.keyboard_listener: Optional[keyboard.GlobalHotKeys] = None
-        self.mouse_listener: Optional[mouse.Listener] = None
+        self._xinput_procs: list[subprocess.Popen] = []
+        self._xinput_stop = threading.Event()
         self.is_listening = False
         self._lock = threading.Lock()
         self._is_mouse_hotkey = False
+        self._extra_hotkeys: dict = {}  # key_combination -> callback
         self.logger = get_logger(__name__)
 
     def set_hotkey(self, key_combination: str) -> None:
@@ -30,11 +34,11 @@ class HotkeyManager:
         Args:
             key_combination: Hotkey string like 'ctrl+shift+v', 'f12', or 'button9'
         """
-        with self._lock:
-            # Stop current listener if running
-            if self.is_listening:
-                self.stop_listening()
+        # Stop outside the lock to avoid deadlock (stop_listening also acquires _lock)
+        if self.is_listening:
+            self.stop_listening()
 
+        with self._lock:
             self.current_hotkey = key_combination
             self._is_mouse_hotkey = self._is_mouse_button(key_combination)
 
@@ -55,12 +59,12 @@ class HotkeyManager:
             if self.is_listening:
                 return
 
-            if not (self.keyboard_listener or self.mouse_listener):
+            if not (self.keyboard_listener or self._is_mouse_hotkey):
                 raise RuntimeError("No hotkey set. Call set_hotkey() first.")
 
             try:
-                if self._is_mouse_hotkey and self.mouse_listener:
-                    self.mouse_listener.start()
+                if self._is_mouse_hotkey:
+                    self._start_xinput_listeners()
                 elif self.keyboard_listener:
                     self.keyboard_listener.start()
 
@@ -79,9 +83,7 @@ class HotkeyManager:
                 if self.keyboard_listener:
                     self.keyboard_listener.stop()
                     self.keyboard_listener = None
-                if self.mouse_listener:
-                    self.mouse_listener.stop()
-                    self.mouse_listener = None
+                self._stop_xinput_listeners()
             except Exception as e:
                 self.logger.error(f"Error stopping listener: {e}")
 
@@ -161,33 +163,84 @@ class HotkeyManager:
         """Check if the hotkey is a mouse button."""
         return key_combination.startswith("button") and key_combination[6:].isdigit()
 
+    def register_hotkey(self, key_combination: str, callback: Callable[[], None]) -> None:
+        """
+        Register an additional hotkey with its own callback.
+        Must be called before start_listening() or will require restart.
+
+        Args:
+            key_combination: Hotkey string like 'ctrl+alt+space'
+            callback: Function to call when this hotkey is pressed
+        """
+        self._extra_hotkeys[key_combination] = callback
+
     def _setup_keyboard_listener(self, key_combination: str) -> None:
         """Set up keyboard listener for keyboard hotkeys."""
         normalized_hotkey = self._normalize_hotkey(key_combination)
         hotkey_dict = {normalized_hotkey: self._on_hotkey_pressed}
+
+        # Add extra registered hotkeys
+        for combo, cb in self._extra_hotkeys.items():
+            if not self._is_mouse_button(combo):
+                normalized = self._normalize_hotkey(combo)
+                hotkey_dict[normalized] = cb
+
         self.keyboard_listener = keyboard.GlobalHotKeys(hotkey_dict)
 
     def _setup_mouse_listener(self, key_combination: str) -> None:
-        """Set up mouse listener for mouse button hotkeys."""
-        # Extract button number (e.g., "button9" -> 9)
+        """Validate mouse button hotkey format. Actual listeners start in start_listening()."""
         button_num = int(key_combination[6:])
+        if button_num < 8:
+            raise ValueError(f"Mouse buttons below 8 are not supported as hotkeys (got {button_num})")
+        self._target_button_num = button_num
 
-        # Map to pynput mouse button
-        if button_num == 8:
-            target_button = mouse.Button.button8
-        elif button_num == 9:
-            target_button = mouse.Button.button9
-        else:
-            # For buttons 10+, use getattr
-            target_button = getattr(mouse.Button, f"button{button_num}", None)
-            if target_button is None:
-                raise ValueError(f"Unsupported mouse button: {button_num}")
+    def _start_xinput_listeners(self) -> None:
+        """Spawn xinput test processes on all pointer devices to detect the target button."""
+        self._xinput_stop.clear()
+        self._xinput_procs = []
+        try:
+            out = subprocess.check_output(["xinput", "list", "--short"], text=True)
+        except FileNotFoundError:
+            self.logger.error("xinput not found — mouse button hotkeys require xinput")
+            return
+        for line in out.splitlines():
+            if "slave  pointer" not in line or "Virtual" in line or "XTEST" in line:
+                continue
+            m = re.search(r"id=(\d+)", line)
+            if not m:
+                continue
+            dev_id = m.group(1)
+            proc = subprocess.Popen(
+                ["xinput", "test", dev_id],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            )
+            self._xinput_procs.append(proc)
+            t = threading.Thread(
+                target=self._read_xinput, args=(proc,), daemon=True
+            )
+            t.start()
 
-        def on_click(x, y, button, pressed):
-            if button == target_button and pressed:
-                self._on_hotkey_pressed()
+    def _read_xinput(self, proc: subprocess.Popen) -> None:
+        """Read xinput output and fire callback on target button press."""
+        try:
+            for line in proc.stdout:
+                if self._xinput_stop.is_set():
+                    break
+                m = re.match(r"button press\s+(\d+)", line.strip())
+                if m and int(m.group(1)) == self._target_button_num:
+                    self._on_hotkey_pressed()
+        except Exception:
+            pass
 
-        self.mouse_listener = mouse.Listener(on_click=on_click)
+    def _stop_xinput_listeners(self) -> None:
+        """Terminate all xinput test processes."""
+        self._xinput_stop.set()
+        for proc in self._xinput_procs:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        self._xinput_procs = []
 
     @staticmethod
     def get_suggested_hotkeys() -> list:

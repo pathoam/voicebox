@@ -35,7 +35,7 @@ from PyQt6.QtGui import QIcon, QPixmap, QAction
 
 from src.main import VoiceBoxApp
 from src.config.manager import ConfigManager
-from src.ui.widgets import SearchableComboBox
+from src.ui.widgets import SearchableComboBox, HotkeyButton
 from src.commands.openrouter_models import OpenRouterModels
 
 
@@ -138,7 +138,7 @@ class SettingsWindow(QMainWindow):
         # Create tabs
         self.create_general_tab()
         self.create_command_tab()
-        self.create_substitutions_tab()
+        self.create_corrections_tab()
 
         # Connect tab change signal to start model fetching
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
@@ -218,7 +218,7 @@ class SettingsWindow(QMainWindow):
         hotkey_group = QGroupBox("Hotkey")
         hotkey_layout = QFormLayout(hotkey_group)
 
-        self.hotkey_edit = QLineEdit()
+        self.hotkey_edit = HotkeyButton()
         hotkey_layout.addRow("Hotkey:", self.hotkey_edit)
 
         layout.addWidget(hotkey_group)
@@ -507,13 +507,13 @@ class SettingsWindow(QMainWindow):
         except Exception as e:
             print(f"Search failed: {e}")
 
-    def create_substitutions_tab(self):
-        """Create the text substitutions tab."""
-        subs_tab = QWidget()
-        layout = QVBoxLayout(subs_tab)
+    def create_corrections_tab(self):
+        """Create the text corrections tab (replaces old substitutions tab)."""
+        corrections_tab = QWidget()
+        layout = QVBoxLayout(corrections_tab)
 
-        # Header
-        header_label = QLabel("Text Substitutions")
+        # --- Corrections Section ---
+        header_label = QLabel("Text Corrections")
         header_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(header_label)
 
@@ -522,45 +522,111 @@ class SettingsWindow(QMainWindow):
         )
         layout.addWidget(desc_label)
 
-        # Table for substitutions
-        self.substitutions_table = QTableWidget()
-        self.substitutions_table.setColumnCount(2)
-        self.substitutions_table.setHorizontalHeaderLabels(
+        # Search filter
+        search_layout = QHBoxLayout()
+        search_label = QLabel("Filter:")
+        self.corrections_search = QLineEdit()
+        self.corrections_search.setPlaceholderText("Search corrections...")
+        self.corrections_search.textChanged.connect(self._filter_corrections_table)
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.corrections_search)
+        layout.addLayout(search_layout)
+
+        # Table for corrections
+        self.corrections_table = QTableWidget()
+        self.corrections_table.setColumnCount(2)
+        self.corrections_table.setHorizontalHeaderLabels(
             ["Misheard Text", "Correct Text"]
         )
-        self.substitutions_table.horizontalHeader().setSectionResizeMode(
+        self.corrections_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
-        layout.addWidget(self.substitutions_table)
+        layout.addWidget(self.corrections_table)
 
-        # Buttons for managing substitutions
-        subs_button_layout = QHBoxLayout()
+        # Buttons for managing corrections
+        corr_button_layout = QHBoxLayout()
 
-        self.add_sub_button = QPushButton("Add")
-        self.add_sub_button.clicked.connect(self.add_substitution)
+        self.add_corr_button = QPushButton("Add")
+        self.add_corr_button.clicked.connect(self.add_correction)
 
-        self.remove_sub_button = QPushButton("Remove Selected")
-        self.remove_sub_button.clicked.connect(self.remove_substitution)
+        self.remove_corr_button = QPushButton("Remove Selected")
+        self.remove_corr_button.clicked.connect(self.remove_correction)
 
-        self.import_sub_button = QPushButton("Import...")
-        self.import_sub_button.clicked.connect(self.import_substitutions)
+        self.import_corr_button = QPushButton("Import...")
+        self.import_corr_button.clicked.connect(self.import_corrections)
 
-        self.export_sub_button = QPushButton("Export...")
-        self.export_sub_button.clicked.connect(self.export_substitutions)
+        self.export_corr_button = QPushButton("Export...")
+        self.export_corr_button.clicked.connect(self.export_corrections)
 
-        self.reset_sub_button = QPushButton("Reset to Defaults")
-        self.reset_sub_button.clicked.connect(self.reset_substitutions)
+        self.reset_corr_button = QPushButton("Reset to Defaults")
+        self.reset_corr_button.clicked.connect(self.reset_corrections)
 
-        subs_button_layout.addWidget(self.add_sub_button)
-        subs_button_layout.addWidget(self.remove_sub_button)
-        subs_button_layout.addStretch()
-        subs_button_layout.addWidget(self.import_sub_button)
-        subs_button_layout.addWidget(self.export_sub_button)
-        subs_button_layout.addWidget(self.reset_sub_button)
+        corr_button_layout.addWidget(self.add_corr_button)
+        corr_button_layout.addWidget(self.remove_corr_button)
+        corr_button_layout.addStretch()
+        corr_button_layout.addWidget(self.import_corr_button)
+        corr_button_layout.addWidget(self.export_corr_button)
+        corr_button_layout.addWidget(self.reset_corr_button)
 
-        layout.addLayout(subs_button_layout)
+        layout.addLayout(corr_button_layout)
 
-        self.tab_widget.addTab(subs_tab, "Substitutions")
+        # --- Vocabulary Section ---
+        vocab_group = QGroupBox("Vocabulary (ASR Context Biasing)")
+        vocab_layout = QVBoxLayout(vocab_group)
+
+        vocab_desc = QLabel(
+            "Terms listed here bias the ASR model toward these words during transcription. "
+            "Keep 20-50 focused terms for best results."
+        )
+        vocab_desc.setWordWrap(True)
+        vocab_layout.addWidget(vocab_desc)
+
+        self.vocab_list = QTextEdit()
+        self.vocab_list.setMaximumHeight(100)
+        self.vocab_list.setPlaceholderText("One term per line (e.g., Kubernetes, Claude, Supabase)")
+        vocab_layout.addWidget(self.vocab_list)
+
+        vocab_btn_layout = QHBoxLayout()
+        self.vocab_add_btn = QPushButton("Add Term")
+        self.vocab_add_btn.clicked.connect(self._add_vocab_term)
+        self.vocab_clear_btn = QPushButton("Clear All")
+        self.vocab_clear_btn.clicked.connect(self._clear_vocab)
+        vocab_btn_layout.addWidget(self.vocab_add_btn)
+        vocab_btn_layout.addWidget(self.vocab_clear_btn)
+        vocab_btn_layout.addStretch()
+        vocab_layout.addLayout(vocab_btn_layout)
+
+        layout.addWidget(vocab_group)
+
+        # --- Training Data Section ---
+        training_group = QGroupBox("Training Data")
+        training_layout = QFormLayout(training_group)
+
+        self.training_stats_label = QLabel("Loading...")
+        training_layout.addRow("Stats:", self.training_stats_label)
+
+        self.training_max_spin = QSpinBox()
+        self.training_max_spin.setRange(100, 10000)
+        self.training_max_spin.setSuffix(" MB")
+        self.training_max_spin.setValue(2048)
+        training_layout.addRow("Max Storage:", self.training_max_spin)
+
+        self.training_enabled_check = QCheckBox("Enable training data collection")
+        training_layout.addRow("", self.training_enabled_check)
+
+        training_btn_layout = QHBoxLayout()
+        self.training_export_btn = QPushButton("Export...")
+        self.training_export_btn.clicked.connect(self._export_training_data)
+        self.training_clear_btn = QPushButton("Clear All Data")
+        self.training_clear_btn.clicked.connect(self._clear_training_data)
+        training_btn_layout.addWidget(self.training_export_btn)
+        training_btn_layout.addWidget(self.training_clear_btn)
+        training_btn_layout.addStretch()
+        training_layout.addRow("", training_btn_layout)
+
+        layout.addWidget(training_group)
+
+        self.tab_widget.addTab(corrections_tab, "Corrections")
 
     def _snapshot_transcription_settings(self) -> dict:
         """Capture current transcription-related settings for change detection."""
@@ -588,7 +654,7 @@ class SettingsWindow(QMainWindow):
                 self.language_combo.setCurrentIndex(i)
                 break
 
-        self.hotkey_edit.setText(self.config_manager.get_hotkey())
+        self.hotkey_edit.setHotkey(self.config_manager.get_hotkey())
         self.insertion_combo.setCurrentText(
             self.config_manager.get_text_insertion_method()
         )
@@ -626,8 +692,20 @@ class SettingsWindow(QMainWindow):
 
         self.local_endpoint_edit.setText(cmd_config.get("local_llm_endpoint", ""))
 
-        # Load substitutions
-        self.load_substitutions_table()
+        # Load corrections
+        self.load_corrections_table()
+
+        # Load vocabulary
+        self._load_vocabulary()
+
+        # Load training data settings
+        self.training_enabled_check.setChecked(
+            self.config_manager.get_setting("training_data_enabled", True)
+        )
+        self.training_max_spin.setValue(
+            self.config_manager.get_setting("training_data_max_mb", 2048)
+        )
+        self._update_training_stats()
 
     def save_settings(self):
         """Save settings and close window."""
@@ -641,7 +719,7 @@ class SettingsWindow(QMainWindow):
         self.config_manager.set_setting(
             "transcription_language", self.language_combo.currentData()
         )
-        self.config_manager.set_setting("hotkey", self.hotkey_edit.text())
+        self.config_manager.set_setting("hotkey", self.hotkey_edit.hotkey())
         self.config_manager.set_setting(
             "text_insertion_method", self.insertion_combo.currentText()
         )
@@ -680,25 +758,39 @@ class SettingsWindow(QMainWindow):
         }
         self.config_manager.set_setting("command_mode", cmd_config)
 
-        # Save substitutions
-        self.save_substitutions()
+        # Save corrections
+        self.save_corrections()
+
+        # Save vocabulary from text edit
+        self._save_vocabulary()
+
+        # Save training data settings
+        self.config_manager.set_setting(
+            "training_data_enabled", self.training_enabled_check.isChecked()
+        )
+        self.config_manager.set_setting(
+            "training_data_max_mb", self.training_max_spin.value()
+        )
 
         # Check if transcription settings changed (needs model reload)
         settings_after = self._snapshot_transcription_settings()
         model_changed = settings_after != self._settings_before
 
         if model_changed and self.voicebox_app:
-            # Reload non-transcription settings first (hotkeys, substitutions, etc.)
+            # Reload non-transcription settings first (hotkeys, corrections, etc.)
             self.voicebox_app.config_manager._load_config()
-            if self.voicebox_app.substitution_manager:
-                self.voicebox_app.substitution_manager.load_substitutions()
+            if self.voicebox_app.correction_pipeline:
+                self.voicebox_app.correction_pipeline.reload()
 
             # Show progress dialog and reload model in background
             self._show_model_reload_dialog()
         else:
-            # No model change — quick reload
+            # No model change — reload in background to avoid blocking the GUI
             if self.voicebox_app and hasattr(self.voicebox_app, "reload_config"):
-                self.voicebox_app.reload_config()
+                import threading
+                threading.Thread(
+                    target=self.voicebox_app.reload_config, daemon=True
+                ).start()
             self.close()
 
     def _show_model_reload_dialog(self):
@@ -753,105 +845,112 @@ class SettingsWindow(QMainWindow):
             # Reload previous snapshot so user can fix settings
             self._settings_before = self._snapshot_transcription_settings()
 
-    def load_substitutions_table(self):
-        """Load substitutions into the table."""
-        # Import substitution manager to access current substitutions
-        from src.text.substitutions import SubstitutionManager
+    def load_corrections_table(self):
+        """Load corrections into the table."""
+        from src.text.corrections import TermReplacementStage
 
         config_dir = self.config_manager.config_dir
-        sub_manager = SubstitutionManager(config_dir)
-        substitutions = sub_manager.get_all_substitutions()
+        stage = TermReplacementStage(config_dir)
+        corrections = stage.get_all_corrections()
 
-        # Set table size
-        self.substitutions_table.setRowCount(len(substitutions))
+        self.corrections_table.setRowCount(len(corrections))
+        for row, (pattern, replacement) in enumerate(corrections.items()):
+            self.corrections_table.setItem(row, 0, QTableWidgetItem(pattern))
+            self.corrections_table.setItem(row, 1, QTableWidgetItem(replacement))
 
-        # Populate table
-        for row, (pattern, replacement) in enumerate(substitutions.items()):
-            self.substitutions_table.setItem(row, 0, QTableWidgetItem(pattern))
-            self.substitutions_table.setItem(row, 1, QTableWidgetItem(replacement))
+    def _filter_corrections_table(self, query: str):
+        """Filter corrections table by search query."""
+        query = query.lower()
+        for row in range(self.corrections_table.rowCount()):
+            pattern_item = self.corrections_table.item(row, 0)
+            replacement_item = self.corrections_table.item(row, 1)
+            pattern_text = pattern_item.text().lower() if pattern_item else ""
+            replacement_text = replacement_item.text().lower() if replacement_item else ""
+            match = not query or query in pattern_text or query in replacement_text
+            self.corrections_table.setRowHidden(row, not match)
 
-    def add_substitution(self):
-        """Add a new substitution row."""
-        row_count = self.substitutions_table.rowCount()
-        self.substitutions_table.insertRow(row_count)
-        self.substitutions_table.setItem(row_count, 0, QTableWidgetItem(""))
-        self.substitutions_table.setItem(row_count, 1, QTableWidgetItem(""))
+    def add_correction(self):
+        """Add a new correction row."""
+        row_count = self.corrections_table.rowCount()
+        self.corrections_table.insertRow(row_count)
+        self.corrections_table.setItem(row_count, 0, QTableWidgetItem(""))
+        self.corrections_table.setItem(row_count, 1, QTableWidgetItem(""))
 
-    def remove_substitution(self):
-        """Remove selected substitution."""
-        current_row = self.substitutions_table.currentRow()
+    def remove_correction(self):
+        """Remove selected correction."""
+        current_row = self.corrections_table.currentRow()
         if current_row >= 0:
-            self.substitutions_table.removeRow(current_row)
+            self.corrections_table.removeRow(current_row)
 
-    def import_substitutions(self):
-        """Import substitutions from file."""
+    def import_corrections(self):
+        """Import corrections from file."""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Import Substitutions", "", "JSON Files (*.json)"
+            self, "Import Corrections", "", "JSON Files (*.json)"
         )
         if file_path:
-            from src.text.substitutions import SubstitutionManager
+            from src.text.corrections import TermReplacementStage
 
             config_dir = self.config_manager.config_dir
-            sub_manager = SubstitutionManager(config_dir)
+            stage = TermReplacementStage(config_dir)
 
-            if sub_manager.import_substitutions(file_path):
-                self.load_substitutions_table()
+            if stage.import_corrections(file_path):
+                self.load_corrections_table()
                 QMessageBox.information(
-                    self, "Success", "Substitutions imported successfully!"
+                    self, "Success", "Corrections imported successfully!"
                 )
             else:
-                QMessageBox.warning(self, "Error", "Failed to import substitutions.")
+                QMessageBox.warning(self, "Error", "Failed to import corrections.")
 
-    def export_substitutions(self):
-        """Export substitutions to file."""
+    def export_corrections(self):
+        """Export corrections to file."""
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Substitutions", "substitutions.json", "JSON Files (*.json)"
+            self, "Export Corrections", "corrections.json", "JSON Files (*.json)"
         )
         if file_path:
-            from src.text.substitutions import SubstitutionManager
+            from src.text.corrections import TermReplacementStage
 
             config_dir = self.config_manager.config_dir
-            sub_manager = SubstitutionManager(config_dir)
+            stage = TermReplacementStage(config_dir)
 
-            if sub_manager.export_substitutions(file_path):
+            if stage.export_corrections(file_path):
                 QMessageBox.information(
-                    self, "Success", "Substitutions exported successfully!"
+                    self, "Success", "Corrections exported successfully!"
                 )
             else:
-                QMessageBox.warning(self, "Error", "Failed to export substitutions.")
+                QMessageBox.warning(self, "Error", "Failed to export corrections.")
 
-    def reset_substitutions(self):
-        """Reset substitutions to defaults."""
+    def reset_corrections(self):
+        """Reset corrections to defaults."""
         reply = QMessageBox.question(
             self,
-            "Reset Substitutions",
-            "Are you sure you want to reset all substitutions to defaults? This will remove all custom substitutions.",
+            "Reset Corrections",
+            "Are you sure you want to reset all corrections to defaults? This will remove all custom corrections.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            from src.text.substitutions import SubstitutionManager
+            from src.text.corrections import TermReplacementStage
 
             config_dir = self.config_manager.config_dir
-            sub_manager = SubstitutionManager(config_dir)
-            sub_manager.reset_to_defaults()
-            self.load_substitutions_table()
+            stage = TermReplacementStage(config_dir)
+            stage.reset_to_defaults()
+            self.load_corrections_table()
 
-    def save_substitutions(self):
-        """Save substitutions from table."""
-        from src.text.substitutions import SubstitutionManager
+    def save_corrections(self):
+        """Save corrections from table."""
+        from src.text.corrections import TermReplacementStage
 
         config_dir = self.config_manager.config_dir
-        sub_manager = SubstitutionManager(config_dir)
+        stage = TermReplacementStage(config_dir)
 
-        # Clear current substitutions (keep only defaults, clear deletions)
-        sub_manager.reset_to_defaults()
+        # Clear current corrections (keep only defaults, clear deletions)
+        stage.reset_to_defaults()
 
         # Collect all patterns from the table
         table_patterns = set()
-        for row in range(self.substitutions_table.rowCount()):
-            pattern_item = self.substitutions_table.item(row, 0)
-            replacement_item = self.substitutions_table.item(row, 1)
+        for row in range(self.corrections_table.rowCount()):
+            pattern_item = self.corrections_table.item(row, 0)
+            replacement_item = self.corrections_table.item(row, 1)
 
             if pattern_item and replacement_item:
                 pattern = pattern_item.text().strip()
@@ -859,16 +958,115 @@ class SettingsWindow(QMainWindow):
 
                 if pattern and replacement:
                     table_patterns.add(pattern.lower())
-                    sub_manager.add_substitution(pattern, replacement)
+                    stage.add_correction(pattern, replacement)
 
         # Mark any defaults that are NOT in the table as deleted
-        for default_pattern in sub_manager.DEFAULT_SUBSTITUTIONS:
+        for default_pattern in stage.DEFAULT_CORRECTIONS:
             if default_pattern.lower() not in table_patterns:
-                if default_pattern not in sub_manager._deleted_defaults:
-                    sub_manager._deleted_defaults.append(default_pattern)
+                if default_pattern not in stage._deleted_defaults:
+                    stage._deleted_defaults.append(default_pattern)
 
         # Save the updated state
-        sub_manager.save_substitutions()
+        stage.save()
+
+    def _load_vocabulary(self):
+        """Load vocabulary terms into the text edit."""
+        from src.text.vocabulary import VocabularyManager
+
+        config_dir = self.config_manager.config_dir
+        vocab = VocabularyManager(config_dir)
+        terms = vocab.get_terms()
+        self.vocab_list.setPlainText("\n".join(terms))
+
+    def _save_vocabulary(self):
+        """Save vocabulary terms from the text edit."""
+        from src.text.vocabulary import VocabularyManager
+
+        config_dir = self.config_manager.config_dir
+        vocab = VocabularyManager(config_dir)
+        vocab.clear()
+        text = self.vocab_list.toPlainText().strip()
+        if text:
+            for line in text.splitlines():
+                term = line.strip()
+                if term:
+                    vocab.add_term(term)
+
+    def _add_vocab_term(self):
+        """Add a vocabulary term via input dialog."""
+        from PyQt6.QtWidgets import QInputDialog
+
+        term, ok = QInputDialog.getText(self, "Add Vocabulary Term", "Term:")
+        if ok and term.strip():
+            from src.text.vocabulary import VocabularyManager
+
+            config_dir = self.config_manager.config_dir
+            vocab = VocabularyManager(config_dir)
+            if vocab.add_term(term.strip()):
+                self._load_vocabulary()
+            else:
+                QMessageBox.information(self, "Info", f"'{term}' is already in vocabulary")
+
+    def _clear_vocab(self):
+        """Clear all vocabulary terms."""
+        reply = QMessageBox.question(
+            self, "Clear Vocabulary",
+            "Are you sure you want to clear all vocabulary terms?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            from src.text.vocabulary import VocabularyManager
+
+            config_dir = self.config_manager.config_dir
+            vocab = VocabularyManager(config_dir)
+            vocab.clear()
+            self._load_vocabulary()
+
+    def _update_training_stats(self):
+        """Update training data statistics display."""
+        try:
+            from src.data.collector import TrainingDataCollector
+
+            config_dir = self.config_manager.config_dir
+            collector = TrainingDataCollector(config_dir, enabled=True)
+            stats = collector.get_stats()
+            self.training_stats_label.setText(
+                f"{stats['total_samples']} samples, "
+                f"{stats['user_edited']} corrected, "
+                f"{stats['total_size_mb']} MB"
+            )
+        except Exception:
+            self.training_stats_label.setText("Unable to load stats")
+
+    def _export_training_data(self):
+        """Export training data to a directory."""
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "Export Training Data"
+        )
+        if dir_path:
+            from src.data.collector import TrainingDataCollector
+
+            config_dir = self.config_manager.config_dir
+            collector = TrainingDataCollector(config_dir, enabled=True)
+            if collector.export(dir_path):
+                QMessageBox.information(self, "Success", "Training data exported!")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to export training data.")
+
+    def _clear_training_data(self):
+        """Clear all training data."""
+        reply = QMessageBox.question(
+            self, "Clear Training Data",
+            "Are you sure you want to delete all training data? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            from src.data.collector import TrainingDataCollector
+
+            config_dir = self.config_manager.config_dir
+            collector = TrainingDataCollector(config_dir, enabled=True)
+            collector.clear()
+            self._update_training_stats()
 
 
 class VoiceBoxGUI(QMainWindow):
@@ -907,8 +1105,12 @@ class VoiceBoxGUI(QMainWindow):
         self.status_label = QLabel("Starting...")
         status_layout.addWidget(self.status_label)
 
-        self.hotkey_label = QLabel(f"Hotkey: {self.config_manager.get_hotkey()}")
-        status_layout.addWidget(self.hotkey_label)
+        hotkey_row = QHBoxLayout()
+        hotkey_row.addWidget(QLabel("Hotkey:"))
+        self.hotkey_button = HotkeyButton(self.config_manager.get_hotkey())
+        self.hotkey_button.hotkeyChanged.connect(self._on_hotkey_changed)
+        hotkey_row.addWidget(self.hotkey_button)
+        status_layout.addLayout(hotkey_row)
 
         self.mode_label = QLabel(
             f"Mode: {self.config_manager.get_transcription_mode()}"
@@ -1019,6 +1221,10 @@ class VoiceBoxGUI(QMainWindow):
                 self.config_manager, self.voicebox_app
             )
             self.settings_window.on_model_status = self._on_model_status
+        self.settings_window.load_settings()
+        self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
 
     def _on_model_status(self, status: str):
         """Update main window status when model is loading/loaded."""
@@ -1029,10 +1235,17 @@ class VoiceBoxGUI(QMainWindow):
                 QSystemTrayIcon.MessageIcon.Critical, 5000,
             )
 
-        self.settings_window.load_settings()  # Refresh values and snapshot
-        self.settings_window.show()
-        self.settings_window.raise_()
-        self.settings_window.activateWindow()
+    def _on_hotkey_changed(self, hotkey: str) -> None:
+        """Handle hotkey change from the capture button."""
+        self.config_manager.set_setting("hotkey", hotkey)
+        if self.voicebox_app and self.voicebox_app.hotkey_manager:
+            try:
+                self.voicebox_app.hotkey_manager.set_hotkey(hotkey)
+                self.voicebox_app.hotkey_manager.start_listening()
+            except Exception as e:
+                self.update_status(f"Hotkey error: {e}")
+                return
+        self.update_status(f"Hotkey set to: {hotkey}")
 
     def start_voicebox(self):
         """Start VoiceBox in worker thread."""
