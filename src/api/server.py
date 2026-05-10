@@ -1,4 +1,8 @@
-"""VoiceBox Local ASR API server (FastAPI + uvicorn)."""
+"""VoiceBox ASR API server (FastAPI + uvicorn).
+
+Supports both local (single-user, no auth) and managed (multi-tenant, auth
+required) modes. Set VOICEBOX_AUTH_ENABLED=true to enable token validation.
+"""
 
 import asyncio
 import tempfile
@@ -9,6 +13,14 @@ from typing import Dict, Optional
 import numpy as np
 
 from src.utils.logging import get_logger
+from src.api.auth import (
+    AUTH_ENABLED,
+    get_auth_dependency,
+    validate_ws_config_token,
+    acquire_stream,
+    release_stream,
+    AuthResult,
+)
 
 logger = get_logger(__name__)
 
@@ -30,10 +42,11 @@ def _get_app():
     if _app is not None:
         return _app
 
-    from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, Query
+    from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, Query, Depends
     from fastapi.responses import JSONResponse
 
     _app = FastAPI(title="VoiceBox ASR API", version="1.0.0")
+    auth_dep = get_auth_dependency()
 
     @_app.get("/v1/status")
     async def status():
@@ -59,6 +72,7 @@ def _get_app():
     async def transcribe(
         file: UploadFile = File(...),
         language: Optional[str] = Query(None),
+        _auth: AuthResult = Depends(auth_dep),
     ):
         if _service is None:
             return JSONResponse(
@@ -114,13 +128,29 @@ def _get_app():
             await ws.close(code=1002, reason="Expected JSON config message")
             return
 
+        # Authenticate from config message (Stage 5: WebSocket auth)
+        auth = await validate_ws_config_token(config)
+        if not auth.ok:
+            await ws.send_json({"error": auth.error or "Authentication failed"})
+            await ws.close(code=1008, reason="Unauthorized")
+            return
+
+        # Per-user stream limit
+        user_id = auth.user_id or "anonymous"
+        if AUTH_ENABLED and not await acquire_stream(user_id):
+            await ws.send_json({"error": "Per-user stream limit reached"})
+            await ws.close(code=1013, reason="Too many streams for this user")
+            return
+
         language = config.get("language", None)
         if language == "auto":
             language = None
 
-        # Check stream limit
+        # Check global stream limit
         active = _service.active_session_count()
         if active >= _max_streams:
+            if AUTH_ENABLED:
+                await release_stream(user_id)
             await ws.send_json({"error": "Max concurrent streams reached"})
             await ws.close(code=1013, reason="Too many streams")
             return
@@ -197,6 +227,8 @@ def _get_app():
             _service.cleanup_session(session_id)
             with _sessions_lock:
                 _sessions.pop(session_id, None)
+            if AUTH_ENABLED:
+                await release_stream(user_id)
             logger.info(f"Session cleaned up: {session_id}")
 
     return _app
