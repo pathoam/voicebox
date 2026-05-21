@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
+import os
 import sys
 import time
 import threading
-import select
 from enum import Enum
 from typing import Optional
 
@@ -1063,16 +1063,54 @@ def _init_qwen_service(config_manager):
     return service
 
 
+def _get_api_port(config_manager):
+    """Return API port, allowing the host launcher to override config."""
+    env_port = os.environ.get("VOICEBOX_API_PORT")
+    if env_port:
+        try:
+            port = int(env_port)
+            if 0 < port <= 65535:
+                return port
+        except ValueError:
+            pass
+        print(f"Ignoring invalid VOICEBOX_API_PORT={env_port!r}")
+
+    return config_manager.get_setting("api_port", 9876)
+
+
+def _get_api_max_streams(config_manager):
+    """Return API stream cap, allowing the host launcher to override config."""
+    env_max = os.environ.get("VOICEBOX_API_MAX_STREAMS")
+    if env_max:
+        try:
+            max_streams = int(env_max)
+            if max_streams > 0:
+                return max_streams
+        except ValueError:
+            pass
+        print(f"Ignoring invalid VOICEBOX_API_MAX_STREAMS={env_max!r}")
+
+    return config_manager.get_setting("api_max_streams", 8)
+
+
 def _start_api_server_only(config_manager):
     """Run the API server in the foreground (blocking). No GUI/hotkeys."""
-    from src.api.server import configure, run_server
+    from src.api.server import configure, start_server
 
-    service = _init_qwen_service(config_manager)
-    port = config_manager.get_setting("api_port", 9876)
-    max_streams = config_manager.get_setting("api_max_streams", 8)
-    configure(service, max_streams=max_streams)
+    port = _get_api_port(config_manager)
+    max_streams = _get_api_max_streams(config_manager)
+    configure(None, max_streams=max_streams)
     print(f"Starting API server on http://127.0.0.1:{port}")
-    run_server(host="127.0.0.1", port=port)
+    server_thread = start_server(host="127.0.0.1", port=port, daemon=False)
+
+    try:
+        service = _init_qwen_service(config_manager)
+    except Exception as exc:
+        print(f"Failed to load Qwen ASR model: {exc}")
+        os._exit(1)
+
+    configure(service, max_streams=max_streams)
+    server_thread.join()
 
 
 def _start_api_daemon(app, config_manager):
@@ -1082,8 +1120,8 @@ def _start_api_daemon(app, config_manager):
     # The app must have initialized transcription already via start()
     # We hook into it after the app starts — but start() is called inside run_forever.
     # Instead, use the app's service after start() by wrapping.
-    port = config_manager.get_setting("api_port", 9876)
-    max_streams = config_manager.get_setting("api_max_streams", 8)
+    port = _get_api_port(config_manager)
+    max_streams = _get_api_max_streams(config_manager)
 
     original_start = app.start
 
@@ -1103,8 +1141,8 @@ def _start_api_headless_for_gui(config_manager):
     from src.api.server import configure, start_server
 
     service = _init_qwen_service(config_manager)
-    port = config_manager.get_setting("api_port", 9876)
-    max_streams = config_manager.get_setting("api_max_streams", 8)
+    port = _get_api_port(config_manager)
+    max_streams = _get_api_max_streams(config_manager)
     configure(service, max_streams=max_streams)
     start_server(host="127.0.0.1", port=port, daemon=True)
     print(f"API server running on http://127.0.0.1:{port}")
@@ -1175,7 +1213,8 @@ def main():
     # Ensure only one instance is running
     from src.utils.singleton import ensure_single_instance
 
-    if not ensure_single_instance(kill_existing=force_mode):
+    lock_name = "voicebox-api" if serve_only_mode else "voicebox"
+    if not ensure_single_instance(kill_existing=force_mode, app_name=lock_name):
         if not force_mode:
             print("Hint: Use --force to stop the existing instance and start a new one.")
         sys.exit(1)

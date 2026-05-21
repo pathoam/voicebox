@@ -58,11 +58,18 @@ def _get_app():
         if _service is not None:
             model_name = f"qwen-{_service.model_size}"
             streaming = _service.supports_streaming()
+        backend_info = {}
+        if _service is not None and hasattr(_service, "get_backend_info"):
+            backend_info = _service.get_backend_info()
         sample_rate = 16000
         return {
             "status": "ready" if _service is not None else "not_configured",
             "model": model_name,
             "streaming_supported": streaming,
+            "backend": backend_info.get("backend"),
+            "backend_preference": backend_info.get("backend_preference"),
+            "vllm_error": backend_info.get("vllm_error"),
+            "kv_cache_mb": backend_info.get("kv_cache_mb"),
             "active_streams": active,
             "max_streams": _max_streams,
             "sample_rate": sample_rate,

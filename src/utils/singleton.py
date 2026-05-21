@@ -156,7 +156,7 @@ class SingletonInstance:
             return False
 
 
-def ensure_single_instance(kill_existing: bool = True) -> bool:
+def ensure_single_instance(kill_existing: bool = True, app_name: str = "voicebox") -> bool:
     """
     Ensure only one instance of VoiceBox is running.
 
@@ -167,7 +167,7 @@ def ensure_single_instance(kill_existing: bool = True) -> bool:
         True if we can proceed (either no other instance, or we killed it).
         False if another instance is running and we couldn't/didn't kill it.
     """
-    singleton = SingletonInstance()
+    singleton = SingletonInstance(app_name)
 
     if singleton.acquire():
         return True

@@ -74,6 +74,8 @@ class QwenGPUBackend:
         self.context = context
         self.model = None
         self._is_vllm = False
+        self._backend_name = "not_loaded"
+        self._vllm_error: Optional[str] = None
         self._lock = threading.Lock()
         # Multi-session streaming state
         self._sessions: Dict[str, object] = {}
@@ -109,11 +111,15 @@ class QwenGPUBackend:
                 max_model_len=max_tokens,
             )
             self._is_vllm = True
+            self._backend_name = "vllm"
+            self._vllm_error = None
             logger.info(f"Loaded Qwen ASR with vLLM backend: {model_name}")
         except Exception as e:
+            self._vllm_error = str(e)
             logger.warning(f"vLLM backend failed ({e}), falling back to from_pretrained")
             self.model = Qwen3ASRModel.from_pretrained(model_name)
             self._is_vllm = False
+            self._backend_name = "transformers"
             logger.info(f"Loaded Qwen ASR with transformers backend: {model_name} (streaming disabled)")
 
     def set_context(self, context: Optional[str]) -> None:
@@ -157,6 +163,14 @@ class QwenGPUBackend:
 
     def supports_streaming(self) -> bool:
         return self._is_vllm
+
+    def get_backend_info(self) -> dict:
+        return {
+            "backend": self._backend_name,
+            "streaming_supported": self._is_vllm,
+            "vllm_error": self._vllm_error,
+            "kv_cache_mb": self.kv_cache_mb,
+        }
 
     def _get_session_lock(self, session_id: str) -> threading.Lock:
         with self._sessions_lock:
@@ -308,6 +322,25 @@ class QwenASRService(StreamingTranscriptionService):
             except TranscriptionError:
                 return False
         return self._backend.supports_streaming() if self._backend else False
+
+    def get_backend_info(self) -> dict:
+        info = {
+            "backend_preference": self.backend_preference,
+            "backend": "not_loaded",
+            "streaming_supported": False,
+            "vllm_error": None,
+            "kv_cache_mb": self.kv_cache_mb,
+        }
+        if not self._loaded:
+            try:
+                self._load_model()
+            except TranscriptionError as exc:
+                info["backend"] = "unavailable"
+                info["vllm_error"] = str(exc)
+                return info
+        if self._backend:
+            info.update(self._backend.get_backend_info())
+        return info
 
     def get_partial_result(self, session_id: str = None) -> Optional[str]:
         if not self._backend:
