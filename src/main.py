@@ -5,14 +5,12 @@ import sys
 import time
 import threading
 from enum import Enum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from src.audio.capture import AudioRecorder
 from src.transcription.local import LocalWhisperService
 from src.transcription.api import APIWhisperService
 from src.transcription.base import TranscriptionService, StreamingTranscriptionService, TranscriptionError
-from src.system.hotkeys import HotkeyManager
-from src.system.text_insertion import TextInserter
 from src.config.manager import ConfigManager
 from src.text.corrections import CorrectionPipeline
 from src.text.vocabulary import VocabularyManager
@@ -21,6 +19,10 @@ from src.commands.detector import CommandDetector
 from src.commands.processor import CommandProcessor
 from src.commands.responder import CommandResponder
 from src.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from src.system.hotkeys import HotkeyManager
+    from src.system.text_insertion import TextInserter
 
 
 class AppState(Enum):
@@ -49,8 +51,8 @@ class VoiceBoxApp:
         # Initialize components
         self.audio_recorder: Optional[AudioRecorder] = None
         self.transcription_service: Optional[TranscriptionService] = None
-        self.hotkey_manager: Optional[HotkeyManager] = None
-        self.text_inserter: Optional[TextInserter] = None
+        self.hotkey_manager: Optional["HotkeyManager"] = None
+        self.text_inserter: Optional["TextInserter"] = None
         self.correction_pipeline: Optional[CorrectionPipeline] = None
         self.vocabulary_manager: Optional[VocabularyManager] = None
         self.training_data_collector: Optional[TrainingDataCollector] = None
@@ -221,6 +223,8 @@ class VoiceBoxApp:
 
     def _initialize_text_inserter(self) -> None:
         """Initialize text insertion component."""
+        from src.system.text_insertion import TextInserter
+
         platform_name = self.config_manager.get_platform()
         self.text_inserter = TextInserter(platform_name=platform_name)
 
@@ -281,6 +285,8 @@ class VoiceBoxApp:
 
     def _initialize_hotkeys(self) -> None:
         """Initialize hotkey management."""
+        from src.system.hotkeys import HotkeyManager
+
         hotkey = self.config_manager.get_hotkey()
         self.hotkey_manager = HotkeyManager(callback=self._on_hotkey_pressed)
 
@@ -1093,15 +1099,21 @@ def _get_api_max_streams(config_manager):
     return config_manager.get_setting("api_max_streams", 8)
 
 
+def _get_api_host():
+    """Return API bind host, allowing containers to bind all interfaces."""
+    return os.environ.get("VOICEBOX_API_HOST", "127.0.0.1")
+
+
 def _start_api_server_only(config_manager):
     """Run the API server in the foreground (blocking). No GUI/hotkeys."""
     from src.api.server import configure, start_server
 
+    host = _get_api_host()
     port = _get_api_port(config_manager)
     max_streams = _get_api_max_streams(config_manager)
     configure(None, max_streams=max_streams)
-    print(f"Starting API server on http://127.0.0.1:{port}")
-    server_thread = start_server(host="127.0.0.1", port=port, daemon=False)
+    print(f"Starting API server on http://{host}:{port}")
+    server_thread = start_server(host=host, port=port, daemon=False)
 
     try:
         service = _init_qwen_service(config_manager)
@@ -1120,6 +1132,7 @@ def _start_api_daemon(app, config_manager):
     # The app must have initialized transcription already via start()
     # We hook into it after the app starts — but start() is called inside run_forever.
     # Instead, use the app's service after start() by wrapping.
+    host = _get_api_host()
     port = _get_api_port(config_manager)
     max_streams = _get_api_max_streams(config_manager)
 
@@ -1129,8 +1142,8 @@ def _start_api_daemon(app, config_manager):
         result = original_start()
         if result and app.transcription_service:
             configure(app.transcription_service, max_streams=max_streams)
-            start_server(host="127.0.0.1", port=port, daemon=True)
-            print(f"API server running on http://127.0.0.1:{port}")
+            start_server(host=host, port=port, daemon=True)
+            print(f"API server running on http://{host}:{port}")
         return result
 
     app.start = _patched_start
@@ -1141,11 +1154,12 @@ def _start_api_headless_for_gui(config_manager):
     from src.api.server import configure, start_server
 
     service = _init_qwen_service(config_manager)
+    host = _get_api_host()
     port = _get_api_port(config_manager)
     max_streams = _get_api_max_streams(config_manager)
     configure(service, max_streams=max_streams)
-    start_server(host="127.0.0.1", port=port, daemon=True)
-    print(f"API server running on http://127.0.0.1:{port}")
+    start_server(host=host, port=port, daemon=True)
+    print(f"API server running on http://{host}:{port}")
 
 
 def main():

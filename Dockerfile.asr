@@ -1,0 +1,42 @@
+FROM docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_LINK_MODE=copy
+ENV PYTHONUNBUFFERED=1
+ENV VOICEBOX_API_HOST=0.0.0.0
+ENV VOICEBOX_API_PORT=9876
+ENV VOICEBOX_API_MAX_STREAMS=8
+ENV VOICEBOX_AUTH_ENABLED=false
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    libasound2t64 \
+    libgl1 \
+    libglib2.0-0 \
+    libportaudio2 \
+    libx11-6 \
+    libxcb-cursor0 \
+    libxkbcommon-x11-0 \
+    portaudio19-dev \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:/app/.venv/bin:${PATH}"
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY voicebox ./voicebox
+
+RUN uv sync --python python3.12 --no-dev --extra api --extra streaming
+
+EXPOSE 9876
+
+CMD ["/app/.venv/bin/python", "src/main.py", "--serve-only"]

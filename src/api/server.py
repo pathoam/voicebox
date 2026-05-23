@@ -5,6 +5,7 @@ required) modes. Set VOICEBOX_AUTH_ENABLED=true to enable token validation.
 """
 
 import asyncio
+import json
 import tempfile
 import time
 import threading
@@ -36,13 +37,49 @@ _sessions_lock = threading.Lock()
 _SESSION_TIMEOUT = 60.0  # seconds of inactivity before auto-cleanup
 
 
+def _context_from_terms(terms) -> Optional[str]:
+    """Build the ASR context prompt from a list of vocabulary terms."""
+    if terms is None:
+        return None
+    if not isinstance(terms, list):
+        return None
+    clean_terms = [str(term).strip() for term in terms if str(term).strip()]
+    if not clean_terms:
+        return None
+    return f"The following terms may appear in the audio: {', '.join(clean_terms)}."
+
+
+def _parse_context_terms(raw) -> Optional[list]:
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            return [part.strip() for part in text.split(",") if part.strip()]
+    return None
+
+
+def _resolve_context(context: Optional[str], context_terms) -> Optional[str]:
+    if context and context.strip():
+        return context.strip()
+    return _context_from_terms(_parse_context_terms(context_terms))
+
+
 def _get_app():
     """Lazily create the FastAPI app."""
     global _app
     if _app is not None:
         return _app
 
-    from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, Query, Depends
+    from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Query, Depends
     from fastapi.responses import JSONResponse
 
     _app = FastAPI(title="VoiceBox ASR API", version="1.0.0")
@@ -75,10 +112,48 @@ def _get_app():
             "sample_rate": sample_rate,
         }
 
+    @_app.post("/v1/streams/reset")
+    async def reset_streams():
+        """Force-cleanup all tracked streaming sessions without restarting."""
+        with _sessions_lock:
+            session_ids = list(_sessions.keys())
+            _sessions.clear()
+
+        cleaned = 0
+        for sid in session_ids:
+            try:
+                _service.cleanup_session(sid)
+            except Exception:
+                pass
+            cleaned += 1
+
+        # Also clean any sessions tracked by the backend but not in _sessions
+        if _service is not None and hasattr(_service, "_backend"):
+            backend = _service._backend
+            if hasattr(backend, "_sessions") and hasattr(backend, "_sessions_lock"):
+                with backend._sessions_lock:
+                    orphaned = [k for k in backend._sessions if k not in session_ids]
+                    for sid in orphaned:
+                        backend._sessions.pop(sid, None)
+                        backend._session_locks.pop(sid, None)
+                        backend._session_contexts.pop(sid, None)
+                        cleaned += 1
+
+        if AUTH_ENABLED:
+            from src.api.auth import _user_streams, _streams_lock
+            async with _streams_lock:
+                _user_streams.clear()
+
+        remaining = _service.active_session_count() if _service else 0
+        logger.info(f"Streams reset: cleaned={cleaned}, remaining={remaining}")
+        return {"cleaned": cleaned, "active_streams": remaining}
+
     @_app.post("/v1/transcribe")
     async def transcribe(
         file: UploadFile = File(...),
         language: Optional[str] = Query(None),
+        context: Optional[str] = Form(None),
+        context_terms: Optional[str] = Form(None),
         _auth: AuthResult = Depends(auth_dep),
     ):
         if _service is None:
@@ -105,8 +180,9 @@ def _get_app():
                 start = time.monotonic()
                 # Run transcription in thread pool to avoid blocking the event loop
                 loop = asyncio.get_event_loop()
+                request_context = _resolve_context(context, context_terms)
                 text = await loop.run_in_executor(
-                    None, _service.transcribe, tmp_path
+                    None, _service.transcribe, tmp_path, request_context
                 )
                 elapsed = time.monotonic() - start
                 return {
@@ -152,6 +228,10 @@ def _get_app():
         language = config.get("language", None)
         if language == "auto":
             language = None
+        request_context = _resolve_context(
+            config.get("context", None),
+            config.get("context_terms", config.get("contextTerms", None)),
+        )
 
         # Check global stream limit
         active = _service.active_session_count()
@@ -163,7 +243,10 @@ def _get_app():
             return
 
         # Create session
-        session_id = _service.start_streaming_session(language=language)
+        session_id = _service.start_streaming_session(
+            language=language,
+            context=request_context,
+        )
         with _sessions_lock:
             _sessions[session_id] = {"last_active": time.monotonic()}
 

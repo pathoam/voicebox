@@ -80,6 +80,7 @@ class QwenGPUBackend:
         # Multi-session streaming state
         self._sessions: Dict[str, object] = {}
         self._session_locks: Dict[str, threading.Lock] = {}
+        self._session_contexts: Dict[str, Optional[str]] = {}
         self._sessions_lock = threading.Lock()
 
     @staticmethod
@@ -178,16 +179,19 @@ class QwenGPUBackend:
                 self._session_locks[session_id] = threading.Lock()
             return self._session_locks[session_id]
 
-    def start_streaming(self, session_id: str = _DEFAULT_SESSION, context: Optional[str] = None) -> str:
+    def start_streaming(self, session_id: str = _DEFAULT_SESSION, language: Optional[str] = None,
+                        context: Optional[str] = None) -> str:
         self.load_model()
         ctx = context if context is not None else self.context
-        kwargs = {"language": self.language}
+        resolved_language = _resolve_language(language) if language else self.language
+        kwargs = {"language": resolved_language}
         if ctx:
             kwargs["context"] = ctx
         state = self.model.init_streaming_state(**kwargs)
         with self._sessions_lock:
             self._sessions[session_id] = state
             self._session_locks[session_id] = threading.Lock()
+            self._session_contexts[session_id] = ctx
         return session_id
 
     def feed_chunk(self, chunk: np.ndarray, session_id: str = _DEFAULT_SESSION) -> None:
@@ -224,7 +228,9 @@ class QwenGPUBackend:
         with self._sessions_lock:
             self._sessions.pop(session_id, None)
             self._session_locks.pop(session_id, None)
-        return self._strip_context_prefix(result, self.context)
+        with self._sessions_lock:
+            ctx = self._session_contexts.pop(session_id, self.context)
+        return self._strip_context_prefix(result, ctx)
 
     def get_partial_result(self, session_id: str = _DEFAULT_SESSION) -> Optional[str]:
         with self._sessions_lock:
@@ -236,7 +242,9 @@ class QwenGPUBackend:
         partial = (fixed + unfixed).strip()
         if not partial:
             return None
-        return self._strip_context_prefix(partial, self.context)
+        with self._sessions_lock:
+            ctx = self._session_contexts.get(session_id, self.context)
+        return self._strip_context_prefix(partial, ctx)
 
     def get_max_recording_seconds(self) -> Optional[float]:
         """Return the max safe recording duration in seconds, or None if no limit."""
@@ -251,6 +259,7 @@ class QwenGPUBackend:
         with self._sessions_lock:
             self._sessions.pop(session_id, None)
             self._session_locks.pop(session_id, None)
+            self._session_contexts.pop(session_id, None)
 
 
 class QwenASRService(StreamingTranscriptionService):
@@ -293,9 +302,9 @@ class QwenASRService(StreamingTranscriptionService):
         self._backend.load_model()
         self._loaded = True
 
-    def transcribe(self, audio_file_path: str) -> str:
+    def transcribe(self, audio_file_path: str, context: Optional[str] = None) -> str:
         self._load_model()
-        return self._backend.transcribe_file(audio_file_path)
+        return self._backend.transcribe_file(audio_file_path, context=context)
 
     def is_available(self) -> bool:
         return QwenGPUBackend.is_available()
@@ -350,19 +359,11 @@ class QwenASRService(StreamingTranscriptionService):
 
     # -- Multi-session API (used by the HTTP/WS server) --
 
-    def start_streaming_session(self, language: str = None) -> str:
+    def start_streaming_session(self, language: str = None, context: Optional[str] = None) -> str:
         """Start a new streaming session, returning its unique session ID."""
         self._load_model()
         session_id = str(uuid.uuid4())[:8]
-        if language:
-            # For per-session language, we create the state with resolved language
-            resolved = _resolve_language(language)
-            state = self._backend.model.init_streaming_state(language=resolved)
-            with self._backend._sessions_lock:
-                self._backend._sessions[session_id] = state
-                self._backend._session_locks[session_id] = threading.Lock()
-        else:
-            self._backend.start_streaming(session_id)
+        self._backend.start_streaming(session_id, language=language, context=context)
         return session_id
 
     def feed_chunk_session(self, session_id: str, audio_chunk: np.ndarray) -> None:
