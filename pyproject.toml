@@ -60,4 +60,5 @@ packages = ["src"]
 dev-dependencies = [
     "pyinstaller>=6.0.0",
     "pytest>=7.0.0",
+    "pytest-asyncio>=1.4.0",
 ]

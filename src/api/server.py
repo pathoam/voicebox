@@ -68,9 +68,17 @@ def _parse_context_terms(raw) -> Optional[list]:
 
 
 def _resolve_context(context: Optional[str], context_terms) -> Optional[str]:
+    parts = []
     if context and context.strip():
-        return context.strip()
-    return _context_from_terms(_parse_context_terms(context_terms))
+        parts.append(context.strip())
+
+    terms_context = _context_from_terms(_parse_context_terms(context_terms))
+    if terms_context:
+        parts.append(terms_context)
+
+    if not parts:
+        return None
+    return "\n\n".join(parts)
 
 
 def _get_app():
@@ -113,22 +121,36 @@ def _get_app():
         }
 
     @_app.post("/v1/streams/reset")
-    async def reset_streams():
+    async def reset_streams(_auth: AuthResult = Depends(auth_dep)):
         """Force-cleanup all tracked streaming sessions without restarting."""
         with _sessions_lock:
-            session_ids = list(_sessions.keys())
-            _sessions.clear()
+            reset_all = not AUTH_ENABLED or _auth.token_type == "host"
+            if reset_all:
+                session_ids = list(_sessions.keys())
+                _sessions.clear()
+            else:
+                session_ids = [
+                    sid
+                    for sid, meta in _sessions.items()
+                    if (
+                        (_auth.frame_id and meta.get("frame_id") == _auth.frame_id)
+                        or (_auth.user_id and meta.get("user_id") == _auth.user_id)
+                    )
+                ]
+                for sid in session_ids:
+                    _sessions.pop(sid, None)
 
         cleaned = 0
         for sid in session_ids:
             try:
-                _service.cleanup_session(sid)
+                if _service is not None:
+                    _service.cleanup_session(sid)
             except Exception:
                 pass
             cleaned += 1
 
         # Also clean any sessions tracked by the backend but not in _sessions
-        if _service is not None and hasattr(_service, "_backend"):
+        if (not AUTH_ENABLED or _auth.token_type == "host") and _service is not None and hasattr(_service, "_backend"):
             backend = _service._backend
             if hasattr(backend, "_sessions") and hasattr(backend, "_sessions_lock"):
                 with backend._sessions_lock:
@@ -142,7 +164,10 @@ def _get_app():
         if AUTH_ENABLED:
             from src.api.auth import _user_streams, _streams_lock
             async with _streams_lock:
-                _user_streams.clear()
+                if _auth.token_type == "host":
+                    _user_streams.clear()
+                elif _auth.user_id:
+                    _user_streams.pop(_auth.user_id, None)
 
         remaining = _service.active_session_count() if _service else 0
         logger.info(f"Streams reset: cleaned={cleaned}, remaining={remaining}")
@@ -248,7 +273,11 @@ def _get_app():
             context=request_context,
         )
         with _sessions_lock:
-            _sessions[session_id] = {"last_active": time.monotonic()}
+            _sessions[session_id] = {
+                "last_active": time.monotonic(),
+                "user_id": auth.user_id,
+                "frame_id": auth.frame_id,
+            }
 
         await ws.send_json({"status": "streaming", "session_id": session_id})
         logger.info(f"WebSocket stream started: session={session_id}")

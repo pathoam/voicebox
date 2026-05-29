@@ -6,6 +6,8 @@ and cached for a configurable TTL.
 """
 
 import asyncio
+import inspect
+import httpx
 import os
 import time
 from dataclasses import dataclass, field
@@ -128,7 +130,6 @@ async def validate_token(token: str, frame_id: Optional[str] = None) -> AuthResu
 
     # Call gateway
     try:
-        import httpx
         async with httpx.AsyncClient(timeout=10.0) as client:
             body: dict = {"token": token}
             if frame_id:
@@ -145,6 +146,8 @@ async def validate_token(token: str, frame_id: Optional[str] = None) -> AuthResu
                 return result
 
             data = resp.json()
+            if inspect.isawaitable(data):
+                data = await data
             if data.get("ok"):
                 result = AuthResult(
                     ok=True,

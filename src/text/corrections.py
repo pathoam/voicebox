@@ -346,6 +346,17 @@ class NumberNormalizationStage(CorrectionStage):
         "billion": 1_000_000_000,
     }
 
+    _OPERATORS = {
+        "plus": "+",
+        "minus": "-",
+        "times": "*",
+    }
+
+    _MULTI_WORD_OPERATORS = {
+        ("multiplied", "by"): "*",
+        ("divided", "by"): "/",
+    }
+
     # Pattern to match compound numbers like "twenty three" or "four point nine"
     _NUM_WORDS = set(list(_ONES.keys()) + list(_TENS.keys()) + list(_SCALES.keys()) + ["point", "and"])
 
@@ -362,6 +373,19 @@ class NumberNormalizationStage(CorrectionStage):
         i = 0
 
         while i < len(words):
+            math_match = self._match_math_expression(words, i)
+            if math_match is not None:
+                end_idx, original, corrected = math_match
+                corrections.append(CorrectionRecord(
+                    stage=self.name,
+                    original=original,
+                    corrected=corrected,
+                    position=len(" ".join(result_words)),
+                ))
+                result_words.append(corrected)
+                i = end_idx
+                continue
+
             # Check if this word starts a number sequence
             word_lower = words[i].lower().rstrip(".,;:!?")
             if word_lower in self._NUM_WORDS and word_lower != "and":
@@ -408,6 +432,76 @@ class NumberNormalizationStage(CorrectionStage):
             corrections=corrections,
         )
 
+    def _match_math_expression(self, words: List[str], start: int) -> Optional[Tuple[int, str, str]]:
+        left = self._consume_number(words, start, allow_single=True)
+        if left is None:
+            return None
+
+        left_end, left_value = left
+        operator = self._consume_operator(words, left_end)
+        if operator is None:
+            return None
+
+        operator_end, operator_symbol = operator
+        right = self._consume_number(words, operator_end, allow_single=True)
+        if right is None:
+            return None
+
+        right_end, right_value = right
+        trailing = self._trailing_punctuation(words[right_end - 1])
+        original = " ".join(words[start:right_end])
+        return right_end, original, f"{left_value} {operator_symbol} {right_value}{trailing}"
+
+    def _consume_operator(self, words: List[str], start: int) -> Optional[Tuple[int, str]]:
+        if start >= len(words):
+            return None
+
+        first = words[start].lower().rstrip(".,;:!?")
+        for phrase, symbol in self._MULTI_WORD_OPERATORS.items():
+            end = start + len(phrase)
+            if end <= len(words):
+                candidate = tuple(w.lower().rstrip(".,;:!?") for w in words[start:end])
+                if candidate == phrase:
+                    return end, symbol
+
+        if first in self._OPERATORS:
+            return start + 1, self._OPERATORS[first]
+        return None
+
+    def _consume_number(self, words: List[str], start: int, allow_single: bool = False) -> Optional[Tuple[int, str]]:
+        if start >= len(words):
+            return None
+
+        num_words = []
+        j = start
+        while j < len(words):
+            w = words[j].lower().rstrip(".,;:!?")
+            if w in self._NUM_WORDS:
+                num_words.append(w)
+                j += 1
+            else:
+                break
+
+        if not num_words:
+            return None
+        if len(num_words) == 1 and not allow_single:
+            return None
+
+        number_str = self._words_to_number(num_words)
+        if number_str is None:
+            return None
+        return j, number_str
+
+    @staticmethod
+    def _trailing_punctuation(word: str) -> str:
+        trailing = ""
+        for ch in reversed(word):
+            if ch in ".,;:!?":
+                trailing = ch + trailing
+            else:
+                break
+        return trailing
+
     def _words_to_number(self, words: List[str]) -> Optional[str]:
         """Convert a list of number words to a digit string. Returns None on failure."""
         # Handle decimal: "four point nine" -> "4.9"
@@ -433,7 +527,12 @@ class NumberNormalizationStage(CorrectionStage):
             return f"{int_val}.{''.join(dec_digits)}"
 
         # Pure integer
-        # Filter out "and"
+        # Treat "and" only as a connector in scaled compound numbers like
+        # "one hundred and five"; do not turn "four and five" into 9.
+        if "and" in words and not any(w in self._SCALES for w in words):
+            return None
+
+        # Filter out valid connector "and"
         words = [w for w in words if w != "and"]
         val = self._parse_integer(words)
         if val is not None:

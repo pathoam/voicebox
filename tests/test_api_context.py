@@ -15,6 +15,10 @@ def test_parse_context_terms_accepts_json_and_csv():
     assert _parse_context_terms("Qwen, ASR") == ["Qwen", "ASR"]
 
 
-def test_resolve_context_prefers_explicit_context():
-    assert _resolve_context(" custom prompt ", ["ignored"]) == "custom prompt"
+def test_resolve_context_merges_explicit_context_and_terms():
+    assert (
+        _resolve_context(" custom prompt ", ["Optagon", "Voicebox"])
+        == "custom prompt\n\nThe following terms may appear in the audio: Optagon, Voicebox."
+    )
     assert _resolve_context(None, ["Qwen"]) == "The following terms may appear in the audio: Qwen."
+    assert _resolve_context(" custom prompt ", None) == "custom prompt"
